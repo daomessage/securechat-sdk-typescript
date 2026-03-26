@@ -62,3 +62,22 @@ export {
   verifySignal,
   type MessageEnvelope,
 } from './crypto/index'
+
+// ── 消息收发 + 离线同步 ────────────────────────────────────
+export {
+  MessageModule,
+  createWSTransport,
+  type OutgoingMessage,
+  type IncomingMessage,
+  type MessageStatus,
+  type WSTransport,
+} from './messaging/index'
+
+// ── 视频通话 ──────────────────────────────────────────────
+export {
+  CallModule,
+  setupE2EETransform,
+  type CallState,
+  type CallOptions,
+  type SignalTransport,
+} from './calls/index'
