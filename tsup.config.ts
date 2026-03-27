@@ -2,7 +2,7 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/calls/e2ee-worker.ts'],
   format: ['esm', 'cjs'],
   dts: true,                // 生成 .d.ts 类型声明文件
   sourcemap: true,

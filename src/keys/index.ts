@@ -12,7 +12,7 @@
  *  - @noble/hashes/sha512：PBKDF KDF
  */
 
-import { generateMnemonic, mnemonicToSeedSync, validateMnemonic, wordlist } from '@scure/bip39'
+import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/bip39'
 import { wordlist as englishWordlist } from '@scure/bip39/wordlists/english'
 import { ed25519 } from '@noble/curves/ed25519'
 import { x25519 } from '@noble/curves/ed25519' // x25519 与 ed25519 共享同一模块
@@ -129,8 +129,13 @@ export function deriveSessionKey(
   sharedSecret: Uint8Array,
   conversationId: string
 ): Uint8Array {
-  const info = new TextEncoder().encode(`securechat-session:${conversationId}`)
-  return hkdf(sha256, sharedSecret, new Uint8Array(32), info, 32)
+  // Bug4 修复：salt = SHA-256(conv_id)（文档 §1.5.4 严格规定）
+  // info = "securechat-session-v1"（固定版本串）
+  // 这确保不同 conv_id 派生不同会话密钥，且与文档完全一致
+  const convIdBytes = new TextEncoder().encode(conversationId)
+  const salt = sha256(convIdBytes)                              // SHA-256(conv_id)
+  const info = new TextEncoder().encode('securechat-session-v1')
+  return hkdf(sha256, sharedSecret, salt, info, 32)
 }
 
 // ─── 安全码（MITM 防御）──────────────────────────────────────
@@ -201,26 +206,26 @@ function bufferCompare(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length
 }
 
-// 简化版 HKDF-SHA256（提取+展开）
 function hkdf(
-  hash: (data: Uint8Array) => Uint8Array,
+  _hash: (data: Uint8Array) => Uint8Array,
   ikm: Uint8Array,
   salt: Uint8Array,
   info: Uint8Array,
   length: number
 ): Uint8Array {
-  // Extract
-  const prk = hmac(sha256, salt, ikm)
+  // Extract — hmac 返回类型断言为 Uint8Array<ArrayBuffer>
+  const prk: Uint8Array = new Uint8Array(hmac(sha256, salt, ikm))
   // Expand
   const blocks: Uint8Array[] = []
-  let prev = new Uint8Array(0)
+  let prev: Uint8Array = new Uint8Array(0)
   let counter = 1
   while (blocks.reduce((s, b) => s + b.length, 0) < length) {
     const data = new Uint8Array(prev.length + info.length + 1)
     data.set(prev)
     data.set(info, prev.length)
     data[prev.length + info.length] = counter++
-    prev = hmac(sha256, prk, data)
+    // new Uint8Array(...) 确保类型为 Uint8Array<ArrayBuffer>，消除 SharedArrayBuffer 不兼容
+    prev = new Uint8Array(hmac(sha256, prk, data))
     blocks.push(prev)
   }
   const result = new Uint8Array(length)

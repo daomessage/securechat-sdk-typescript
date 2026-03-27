@@ -263,7 +263,7 @@ export async function setupE2EETransform(
   // Insertable Streams API（Chrome 86+，Firefox 117+）
   if ('RTCRtpScriptTransform' in window) {
     // Worker-based Transform（推荐）
-    const worker = new Worker(new URL('./e2ee-worker.js', import.meta.url))
+    const worker = new Worker(new URL('./calls/e2ee-worker.js', import.meta.url))
     worker.postMessage({ type: 'init', key: frameKey }, [frameKey.buffer])
     const transform = new (window as unknown as { RTCRtpScriptTransform: typeof RTCRtpScriptTransform }).RTCRtpScriptTransform(worker, { operation: kind })
     if (kind === 'sender') {

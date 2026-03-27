@@ -63,6 +63,7 @@ export interface MessageEnvelope {
   id: string
   to: string
   conv_id: string
+  crypto_v: number
   payload: string   // AES-256-GCM 密文 Base64
 }
 
@@ -74,7 +75,7 @@ export async function encryptMessage(
   sessionKeyBytes: Uint8Array
 ): Promise<MessageEnvelope> {
   const payload = await encrypt(plaintext, sessionKeyBytes)
-  return { type: 'msg', id: crypto.randomUUID(), to: toAliasId, conv_id: conversationId, payload }
+  return { type: 'msg', id: crypto.randomUUID(), to: toAliasId, conv_id: conversationId, crypto_v: 1, payload }
 }
 
 /** 解密收到的消息信封 */

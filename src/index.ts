@@ -81,3 +81,13 @@ export {
   type CallOptions,
   type SignalTransport,
 } from './calls/index'
+
+// ── 安全 / MITM 防御（P3-004 修复）────────────────────────
+// SecurityModule 实现文档 §2.2.1 全套接口：安全码/信任状态/防劫持守护
+export {
+  SecurityModule,
+  securityModule,
+  type SecurityCode,
+  type TrustState,
+  type SecurityViolationEvent,
+} from './security/index'

@@ -141,17 +141,19 @@ export async function verifySession(conversationId: string): Promise<void> {
 export async function listFriends(
   apiBase: string,
   token: string
-): Promise<Array<FriendProfile & { status: string; conversationId?: string }>> {
+): Promise<Array<FriendProfile & { friendshipId: number; status: string; direction: string; conversationId?: string }>> {
   const resp = await fetch(`${apiBase}/api/v1/friends`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!resp.ok) throw new Error(`listFriends failed: ${resp.status}`)
   const data = await resp.json()
   return data.map((f: any) => ({
+    friendshipId: f.friendship_id,
     aliasId: f.alias_id,
     nickname: f.nickname,
     x25519PublicKey: f.x25519_public_key,
     status: f.status,
+    direction: f.direction || 'sent',
     conversationId: f.conversation_id,
   }))
 }
