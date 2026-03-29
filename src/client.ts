@@ -144,4 +144,26 @@ export class SecureChatClient {
   public async clearAllHistory(): Promise<void> {
     return clearAllMessages()
   }
+
+  /**
+   * 导出会话存档（NDJSON 格式）
+   * @param conversationId 指定会话 ID，可传 'all' 导出全部
+   * @returns string 生成下载用途的 Blob Object URL
+   */
+  public async exportConversation(conversationId: string): Promise<string> {
+    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/conversations/${conversationId}/export`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.http.getToken()}`,
+      },
+    })
+    
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Export failed: ${res.status} - ${text}`)
+    }
+    
+    const blob = await res.blob()
+    return URL.createObjectURL(blob)
+  }
 }
