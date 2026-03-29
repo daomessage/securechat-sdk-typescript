@@ -63,7 +63,7 @@ export async function acceptFriendAndEstablishSession(
   friendshipId: string,
   myEcdhPrivateKey: Uint8Array,
   myEcdhPublicKey: Uint8Array
-): Promise<EstablishedSession> {
+): Promise<EstablishedSession | null> {
   // 1. 接受好友请求
   const resp = await fetch(`${apiBase}/api/v1/friends/${friendshipId}/accept`, {
     method: 'PUT',
@@ -72,10 +72,10 @@ export async function acceptFriendAndEstablishSession(
   if (!resp.ok) throw new Error(`accept failed: ${resp.status}`)
   const { conversation_id: convId } = await resp.json()
 
-  // 2. 拉取对方 X25519 公钥（friends list 已携带，此处演示独立查询）
+  // 2. 拉取对方 X25519 公钥
   const friends = await listFriends(apiBase, token)
-  const friend = friends.find(f => f.x25519PublicKey !== '') // 简化：取第一个有公钥的
-  if (!friend) throw new Error('friend profile not found')
+  const friend = friends.find(f => f.conversationId === convId)
+  if (!friend || !friend.x25519PublicKey) return null
 
   return buildSession(convId, friend, myEcdhPrivateKey, myEcdhPublicKey)
 }
