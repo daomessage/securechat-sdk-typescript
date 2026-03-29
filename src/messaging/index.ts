@@ -9,6 +9,7 @@ import { saveOfflineMessage, drainOfflineMessages } from '../keys/store'
 import { 
   saveMessage, 
   updateMessageStatus, 
+  updateMessageStatusByConvId,
   addToOutbox, 
   drainOutbox, 
   type StoredMessage, 
@@ -112,21 +113,9 @@ export class MessageModule {
 
       this.transport.send(JSON.stringify(envelope))
 
-      // 更新原有的本地消息 ID 和状态
-      // 由于 ID 变化，我们在持久化层可以做一次克隆，或者前端用 client-side ID 关联
-      // 为简便，这里直接使用新 Envelope ID 追加一条 sent 并在 UI 层依赖新 ID
-      // 真实架构中：可以用 envelope id 直接取代 local id
-      const sentMsg: StoredMessage = {
-        id: envelope.id, // 用服务端认可的真正 ID
-        conversationId: intent.conversationId,
-        text: intent.text,
-        isMe: true,
-        time: intent.addedAt,
-        status: 'sent'
-      }
-      await saveMessage(sentMsg)
-      
-      this.onMessage?.(sentMsg) // 通知 UI 有新 ID 的最终消息
+      // 不立刻设 sent！保持 sending 状态，等服务端 ACK 帧回来再更新
+      // 服务端 processMsg 成功后会回推 {type:'ack', id:envelope.id, seq:N}
+      // SDK handleFrame 收到 ack 后才将 sending→sent
 
     } catch (e) {
       console.warn('[SDK] Failed to encrypt or send outgoing message', e)
@@ -135,21 +124,21 @@ export class MessageModule {
 
   // ── 发送已送达 / 已读确认 ───────────────────────────────────
 
-  sendDelivered(convId: string, seq: number): void {
+  sendDelivered(convId: string, seq: number, toAliasId: string): void {
     if (this.transport.isConnected) {
-      this.transport.send(JSON.stringify({ type: 'delivered', conv_id: convId, seq }))
+      this.transport.send(JSON.stringify({ type: 'delivered', conv_id: convId, seq, to: toAliasId, crypto_v: 1 }))
     }
   }
 
-  sendRead(convId: string, seq: number): void {
+  sendRead(convId: string, seq: number, toAliasId: string): void {
     if (this.transport.isConnected) {
-      this.transport.send(JSON.stringify({ type: 'read', conv_id: convId, seq }))
+      this.transport.send(JSON.stringify({ type: 'read', conv_id: convId, seq, to: toAliasId, crypto_v: 1 }))
     }
   }
 
   sendTyping(toAliasId: string, convId: string): void {
     if (this.transport.isConnected) {
-      this.transport.send(JSON.stringify({ type: 'typing', to: toAliasId, conv_id: convId }))
+      this.transport.send(JSON.stringify({ type: 'typing', to: toAliasId, conv_id: convId, crypto_v: 1 }))
     }
   }
 
@@ -163,11 +152,17 @@ export class MessageModule {
       case 'msg':
         await this.handleIncomingMsg(env as unknown as MessageEnvelope & { from: string; seq: number; at: number })
         break
+      case 'ack':
+        // 服务端确认收到消息 → sending→sent
+        await this.handleStatusChange(env['id'] as string, 'sent')
+        break
       case 'delivered':
-        await this.handleStatusChange(env['id'] as string, 'delivered')
+        // 对方设备收到消息 → 基于 conv_id 批量标记到 seq 为止的消息
+        await this.handleReceiptByConvId(env['conv_id'] as string, env['seq'] as number, 'delivered')
         break
       case 'read':
-        await this.handleStatusChange(env['id'] as string, 'read')
+        // 对方已读 → 基于 conv_id 批量标记到 seq 为止的消息
+        await this.handleReceiptByConvId(env['conv_id'] as string, env['seq'] as number, 'read')
         break
       case 'channel_post':
         this.onChannelPost?.(env as any)
@@ -194,6 +189,8 @@ export class MessageModule {
         isMe: false,
         time: env.at,
         status: 'delivered',
+        seq: env.seq,
+        fromAliasId: env.from,
       }
 
       // 1. 强制写入本地 IndexedDB 后再返回
@@ -202,8 +199,8 @@ export class MessageModule {
       // 2. 然后广播给订阅的 UI 层 (例如 React)
       this.onMessage?.(msg)
       
-      // 3. 自动向服务器回报已送达
-      this.sendDelivered(env.conv_id, env.seq)
+      // 3. 自动向服务器回报已送达（带上发送方 alias_id，后端需要它来路由回执）
+      this.sendDelivered(env.conv_id, env.seq, env.from)
     } catch (e) {
       // 解密失败：存入离线信箱等待后续轮询修复并重试
       await saveOfflineMessage({
@@ -220,11 +217,29 @@ export class MessageModule {
     this.onStatusChange?.({ id, status })
   }
 
+  /**
+   * 处理 delivered/read 回执帧（基于 conv_id 批量更新）
+   * 回执帧格式：{type:'delivered'|'read', conv_id, seq, to}
+   * 不含消息 id，所以需要按 conv_id 查找自己发出的消息并更新
+   */
+  private async handleReceiptByConvId(
+    convId: string, 
+    _seq: number, 
+    status: 'delivered' | 'read'
+  ): Promise<void> {
+    if (!convId) return
+    const updatedIds = await updateMessageStatusByConvId(convId, status)
+    // 逐条通知 UI 层更新状态图标
+    for (const id of updatedIds) {
+      this.onStatusChange?.({ id, status })
+    }
+  }
+
   // ── 连接成功后自动化行为（排空发件箱 + 请求补推）────────────
 
   private async onConnected(): Promise<void> {
     // 1. 发 sync 帧，通知服务端推送收件箱离线差集
-    this.transport.send(JSON.stringify({ type: 'sync' }))
+    this.transport.send(JSON.stringify({ type: 'sync', crypto_v: 1 }))
 
     // 2. 排空发件箱（Outbox Drain）: 尝试发送所有因断网囤积的遗留意图
     const intents = await drainOutbox()

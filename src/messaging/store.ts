@@ -13,6 +13,8 @@ export interface StoredMessage {
   msgType?: string
   mediaUrl?: string
   caption?: string
+  seq?: number           // 服务端分配的消息序号，已读回执需要
+  fromAliasId?: string   // 发送方 alias_id，回执路由需要
 }
 
 export interface OutboxIntent {
@@ -66,6 +68,43 @@ export async function updateMessageStatus(id: string, status: StoredMessage['sta
     msg.status = status
     await db.put('messages', msg)
   }
+}
+
+/**
+ * 基于 conv_id 批量更新自己发出(isMe=true)的消息状态
+ * 用于处理 delivered/read 回执（回执帧只带 conv_id + seq，不带消息 id）
+ * 返回被更新的消息 ID 列表
+ */
+export async function updateMessageStatusByConvId(
+  conversationId: string,
+  status: StoredMessage['status']
+): Promise<string[]> {
+  const db = await getDB()
+  const msgs = await db.getAllFromIndex('messages', 'byConvTime',
+    IDBKeyRange.bound(
+      [conversationId, 0],
+      [conversationId, Number.MAX_SAFE_INTEGER]
+    )
+  ) as StoredMessage[]
+  
+  const updatedIds: string[] = []
+  const tx = db.transaction('messages', 'readwrite')
+  for (const msg of msgs) {
+    // 只更新自己发出的且状态低于目标状态的消息
+    if (msg.isMe && shouldUpgradeStatus(msg.status, status)) {
+      msg.status = status
+      await tx.store.put(msg)
+      updatedIds.push(msg.id)
+    }
+  }
+  await tx.done
+  return updatedIds
+}
+
+/** 状态优先级：sending < sent < delivered < read < failed */
+function shouldUpgradeStatus(current: StoredMessage['status'], target: StoredMessage['status']): boolean {
+  const order: Record<string, number> = { sending: 0, sent: 1, delivered: 2, read: 3, failed: -1 }
+  return (order[target] ?? 0) > (order[current] ?? 0)
 }
 
 export async function getMessage(id: string): Promise<StoredMessage | undefined> {

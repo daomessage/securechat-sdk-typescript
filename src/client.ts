@@ -7,6 +7,7 @@ import { AuthModule } from './auth/manager'
 import { ContactsModule } from './contacts/manager'
 import { MediaModule } from './media/manager'
 import { PushModule } from './push/manager'
+import { ChannelsModule } from './channels/manager'
 
 type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post'
 
@@ -18,6 +19,7 @@ export class SecureChatClient {
   public readonly contacts: ContactsModule
   public readonly media: MediaModule
   public readonly push: PushModule
+  public readonly channels: ChannelsModule
   public http: HttpClient
 
   private eventListeners = {
@@ -37,6 +39,7 @@ export class SecureChatClient {
     this.contacts = new ContactsModule(this.http)
     this.media = new MediaModule(this.http)
     this.push = new PushModule(this.http)
+    this.channels = new ChannelsModule(this.http)
 
     this.messaging.onMessage = (msg) => {
       this.eventListeners.message.forEach((fn) => fn(msg))
@@ -116,9 +119,10 @@ export class SecureChatClient {
 
   /**
    * 标记收到的消息为已读
+   * @param toAliasId 消息发送方的 alias_id，后端据此路由已读回执
    */
-  public markAsRead(conversationId: string, maxSeq: number): void {
-    this.messaging.sendRead(conversationId, maxSeq)
+  public markAsRead(conversationId: string, maxSeq: number, toAliasId: string): void {
+    this.messaging.sendRead(conversationId, maxSeq, toAliasId)
   }
 
   // ── 收件箱与持久化历史获取 ─────────────────────────────────────
