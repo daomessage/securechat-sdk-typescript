@@ -2,6 +2,11 @@ import { MessageModule, WSTransport, type OutgoingMessage } from './messaging'
 import { RobustWSTransport, type NetworkState } from './messaging/transport'
 import { loadMessages, getMessage, clearConversationMessages, clearAllMessages, type StoredMessage } from './messaging/store'
 import type { MessageStatus } from './messaging'
+import { HttpClient } from './http'
+import { AuthModule } from './auth/manager'
+import { ContactsModule } from './contacts/manager'
+import { MediaModule } from './media/manager'
+import { PushModule } from './push/manager'
 
 type ClientEvent = 'message' | 'status_change' | 'network_state'
 
@@ -9,15 +14,28 @@ export class SecureChatClient {
   public readonly transport: RobustWSTransport
   public readonly messaging: MessageModule
 
+  public readonly auth: AuthModule
+  public readonly contacts: ContactsModule
+  public readonly media: MediaModule
+  public readonly push: PushModule
+  public http: HttpClient
+
   private eventListeners = {
     message: new Set<(msg: StoredMessage) => void>(),
     status_change: new Set<(status: MessageStatus) => void>(),
     network_state: new Set<(state: NetworkState) => void>(),
   }
 
-  constructor() {
+  constructor(apiBase: string = '') {
+    this.http = new HttpClient(apiBase)
+
     this.transport = new RobustWSTransport()
     this.messaging = new MessageModule(this.transport)
+
+    this.auth = new AuthModule(this.http)
+    this.contacts = new ContactsModule(this.http)
+    this.media = new MediaModule(this.http)
+    this.push = new PushModule(this.http)
 
     this.messaging.onMessage = (msg) => {
       this.eventListeners.message.forEach((fn) => fn(msg))
@@ -33,9 +51,12 @@ export class SecureChatClient {
   }
 
   /**
-   * 建立连接：给定 WSS 地址与 JWT 令牌
+   * 建立连接：给定 WSS 地址与 JWT 令牌，并且绑定内部的 HTTP Token
    */
   public connect(url: string, token: string): void {
+    // 同步给内部的 Http 客户端，以便触发相关的 API（如拉取历史、上传图片时免传 token）
+    this.http.setToken(token)
+
     const fullUrl = `${url}${url.includes('?') ? '&' : '?'}token=${token}`
     this.transport.connect(fullUrl)
   }

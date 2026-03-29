@@ -72,10 +72,11 @@ export async function encryptMessage(
   conversationId: string,
   toAliasId: string,
   plaintext: string,
-  sessionKeyBytes: Uint8Array
+  sessionKeyBytes: Uint8Array,
+  id: string = crypto.randomUUID()
 ): Promise<MessageEnvelope> {
   const payload = await encrypt(plaintext, sessionKeyBytes)
-  return { type: 'msg', id: crypto.randomUUID(), to: toAliasId, conv_id: conversationId, crypto_v: 1, payload }
+  return { type: 'msg', id, to: toAliasId, conv_id: conversationId, crypto_v: 1, payload }
 }
 
 /** 解密收到的消息信封 */

@@ -105,7 +105,8 @@ export class MessageModule {
         intent.conversationId,
         intent.toAliasId,
         intent.text,
-        sessionKey
+        sessionKey,
+        intent.internalId
       )
 
       this.transport.send(JSON.stringify(envelope))

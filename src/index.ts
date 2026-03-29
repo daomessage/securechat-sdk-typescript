@@ -78,6 +78,7 @@ export { type StoredMessage, type OutboxIntent } from './messaging/store'
 
 // ── 统一门面 Client ──────────────────────────────────────────
 export { SecureChatClient } from './client'
+export { ContactsModule, type FriendProfile as ContactProfile } from './contacts/manager'
 
 // ── 视频通话 ──────────────────────────────────────────────
 export {
