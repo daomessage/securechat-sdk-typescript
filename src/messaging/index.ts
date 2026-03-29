@@ -53,6 +53,7 @@ export interface WSTransport {
 export class MessageModule {
   public onMessage?: (msg: StoredMessage) => void
   public onStatusChange?: (status: MessageStatus) => void
+  public onChannelPost?: (data: any) => void
 
   constructor(private transport: WSTransport) {
     this.transport.onMessage(raw => this.handleFrame(raw))
@@ -167,6 +168,9 @@ export class MessageModule {
         break
       case 'read':
         await this.handleStatusChange(env['id'] as string, 'read')
+        break
+      case 'channel_post':
+        this.onChannelPost?.(env as any)
         break
       case 'sync_batch':
         // Handle server pushing batch missing messages.

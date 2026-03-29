@@ -8,7 +8,7 @@ import { ContactsModule } from './contacts/manager'
 import { MediaModule } from './media/manager'
 import { PushModule } from './push/manager'
 
-type ClientEvent = 'message' | 'status_change' | 'network_state'
+type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post'
 
 export class SecureChatClient {
   public readonly transport: RobustWSTransport
@@ -24,6 +24,7 @@ export class SecureChatClient {
     message: new Set<(msg: StoredMessage) => void>(),
     status_change: new Set<(status: MessageStatus) => void>(),
     network_state: new Set<(state: NetworkState) => void>(),
+    channel_post: new Set<(data: any) => void>(),
   }
 
   constructor(apiBase: string = '') {
@@ -43,6 +44,10 @@ export class SecureChatClient {
 
     this.messaging.onStatusChange = (status) => {
       this.eventListeners.status_change.forEach((fn) => fn(status))
+    }
+
+    this.messaging.onChannelPost = (data) => {
+      this.eventListeners.channel_post.forEach((fn) => fn(data))
     }
 
     this.transport.onNetworkStateChange((state) => {
@@ -81,6 +86,7 @@ export class SecureChatClient {
   public on(event: 'message', listener: (msg: StoredMessage) => void): void
   public on(event: 'status_change', listener: (status: MessageStatus) => void): void
   public on(event: 'network_state', listener: (state: NetworkState) => void): void
+  public on(event: 'channel_post', listener: (data: any) => void): void
   public on(event: ClientEvent, listener: any): void {
     this.eventListeners[event].add(listener)
   }
