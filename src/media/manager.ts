@@ -11,7 +11,6 @@ export interface UploadURLResponse {
 }
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
-const MAGIC_HEADER = new Uint8Array([0x53, 0x43, 0x56, 0x32]); // "SCV2"
 const AES_GCM_NONCE_LEN = 12;
 const AES_KEY_LEN = 256;
 
@@ -84,7 +83,6 @@ export class MediaModule {
     // 每个 Chunk 的格式: [Chunk Length 4 bytes] + [12 bytes IV] + [AES-GCM Ciphertext]
     // 这是为了流式下载时能够精准解出每一个 Chunk 的边界。
     let offset = 0;
-    let isFirstChunk = true;
     
     while (offset < compressed.size || offset === 0) {
       const currentChunkBlob = compressed.slice(offset, offset + CHUNK_SIZE);
@@ -101,18 +99,9 @@ export class MediaModule {
       const chunkLength = cipherBytes.length; // 不含 length prefix 自身和 IV
       
       let payloadLength = 4 + 12 + chunkLength;
-      if (isFirstChunk) {
-        payloadLength += 4; // SCV2
-      }
       
       const payload = new Uint8Array(payloadLength);
       let pOffset = 0;
-      
-      if (isFirstChunk) {
-        payload.set(MAGIC_HEADER, pOffset);
-        pOffset += 4;
-        isFirstChunk = false;
-      }
       
       const view = new DataView(payload.buffer);
       view.setUint32(pOffset, chunkLength, false); // Big endian
@@ -125,7 +114,7 @@ export class MediaModule {
 
       // 上传此分片 (通过后端的 Blind Proxy 盲代传)
       const uploadResp = await this.http.fetch(
-        `/api/v1/media/upload-parts/${uploadId}/chunk?mediaKey=${encodeURIComponent(mediaKey)}&partNumber=${partNumber}`,
+        `${this.http.getApiBase()}/api/v1/media/upload-parts/${encodeURIComponent(uploadId)}/chunk?mediaKey=${encodeURIComponent(mediaKey)}&partNumber=${partNumber}`,
         {
           method: 'POST',
           headers: this.http.getHeaders({
@@ -152,7 +141,7 @@ export class MediaModule {
     }
     
     // 合并分片
-    const completeRes = await this.http.post(`/api/v1/media/upload-parts/${uploadId}/complete`, {
+    const completeRes = await this.http.post(`/api/v1/media/upload-parts/${encodeURIComponent(uploadId)}/complete`, {
       media_key: mediaKey,
       parts
     });
@@ -182,22 +171,11 @@ export class MediaModule {
   }
 
   /**
-   * 下载并流式解密媒体文件，向上兼容老版本的不加密明文图片
+   * 下载并流式解密媒体文件
    */
   public async downloadDecryptedMedia(mediaKey: string, sessionKeyBytes: Uint8Array): Promise<ArrayBuffer> {
     const rawBuffer = await this.downloadMedia(mediaKey);
     const rawData = new Uint8Array(rawBuffer);
-    
-    // 检查是否有 SCV2 魔术头
-    let isEncrypted = false;
-    if (rawData.length >= MAGIC_HEADER.length) {
-      isEncrypted = Array.from(MAGIC_HEADER).every((val, i) => val === rawData[i]);
-    }
-    
-    // 如果没有加密头，说明是老版本的明文图片（向前兼容）
-    if (!isEncrypted) {
-      return rawBuffer;
-    }
     
     // 准备好 decryption key
     const cryptoKey = await crypto.subtle.importKey(
@@ -209,19 +187,19 @@ export class MediaModule {
     );
     
     const chunks: Uint8Array[] = [];
-    let offset = 4; // Skip "SCV2"
+    let offset = 0;
     const view = new DataView(rawData.buffer, rawData.byteOffset, rawData.byteLength);
     
     while (offset < rawData.length) {
-      if (offset + 4 > rawData.length) throw new Error('Corrupted SCV2 data: chunk length OOB');
+      if (offset + 4 > rawData.length) throw new Error('Corrupted data: chunk length OOB');
       const chunkLen = view.getUint32(offset, false);
       offset += 4;
       
-      if (offset + 12 > rawData.length) throw new Error('Corrupted SCV2 data: IV OOB');
+      if (offset + 12 > rawData.length) throw new Error('Corrupted data: IV OOB');
       const iv = rawData.slice(offset, offset + 12);
       offset += 12;
       
-      if (offset + chunkLen > rawData.length) throw new Error('Corrupted SCV2 data: Ciphertext OOB');
+      if (offset + chunkLen > rawData.length) throw new Error('Corrupted data: Ciphertext OOB');
       const cipherBytes = rawData.slice(offset, offset + chunkLen);
       offset += chunkLen;
       
