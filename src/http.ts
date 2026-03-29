@@ -22,7 +22,7 @@ export class HttpClient {
     return this.token;
   }
 
-  private getHeaders(customHeaders?: Record<string, string>): Record<string, string> {
+  public getHeaders(customHeaders?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = { ...customHeaders };
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.token}`;

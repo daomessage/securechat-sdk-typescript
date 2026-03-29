@@ -123,21 +123,25 @@ export class MediaModule {
       
       payload.set(cipherBytes, pOffset);
 
-      // 请求这片的上传 URL
-      const signRes = await this.http.post<{upload_url: string}>(
-        `/api/v1/media/upload-parts/${uploadId}/url`,
-        { media_key: mediaKey, part_number: partNumber }
+      // 上传此分片 (通过后端的 Blind Proxy 盲代传)
+      const uploadResp = await this.http.fetch(
+        `/api/v1/media/upload-parts/${uploadId}/chunk?mediaKey=${encodeURIComponent(mediaKey)}&partNumber=${partNumber}`,
+        {
+          method: 'POST',
+          headers: this.http.getHeaders({
+            'Content-Type': 'application/octet-stream'
+          }),
+          body: payload
+        }
       );
+      if (!uploadResp.ok) {
+        const errorText = await uploadResp.text();
+        throw new Error(`Part ${partNumber} upload proxy failed: ${errorText}`);
+      }
       
-      // 上传此分片
-      const uploadResp = await this.http.fetch(signRes.upload_url, {
-        method: 'PUT',
-        body: payload
-      });
-      if (!uploadResp.ok) throw new Error(`Part ${partNumber} upload failed`);
-      
-      const etag = uploadResp.headers.get('ETag') || uploadResp.headers.get('etag');
-      if (!etag) throw new Error('Missing ETag from S3 response');
+      const resJson = await uploadResp.json() as { etag: string };
+      const etag = resJson.etag;
+      if (!etag) throw new Error('Missing ETag from S3 proxy response');
       
       parts.push({ etag: etag.replace(/"/g, ''), part_number: partNumber });
       
