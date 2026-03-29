@@ -66,12 +66,18 @@ export {
 // ── 消息收发 + 离线同步 ────────────────────────────────────
 export {
   MessageModule,
-  createWSTransport,
+  // createWSTransport, // <== Marked removed for deprecation
   type OutgoingMessage,
   type IncomingMessage,
   type MessageStatus,
   type WSTransport,
 } from './messaging/index'
+
+export { RobustWSTransport, type NetworkState } from './messaging/transport'
+export { type StoredMessage, type OutboxIntent } from './messaging/store'
+
+// ── 统一门面 Client ──────────────────────────────────────────
+export { SecureChatClient } from './client'
 
 // ── 视频通话 ──────────────────────────────────────────────
 export {
