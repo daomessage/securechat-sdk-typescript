@@ -10,6 +10,11 @@ export interface UploadURLResponse {
   expires_in: number
 }
 
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+const MAGIC_HEADER = new Uint8Array([0x53, 0x43, 0x56, 0x32]); // "SCV2"
+const AES_GCM_NONCE_LEN = 12;
+const AES_KEY_LEN = 256;
+
 export class MediaModule {
   private http: HttpClient
 
@@ -50,18 +55,117 @@ export class MediaModule {
   }
 
   /**
+   * 分片上传加密大文件 (由于原生 AES-GCM 限制，采用基于 Chunk 的流式加密)
+   * 返回 "[img]media_key" （此处重用业务层格式）
+   */
+  public async uploadEncryptedFile(file: File, sessionKeyBytes: Uint8Array, maxDim: number = 1920, quality: number = 0.85): Promise<string> {
+    const compressed = await this.compressImage(file, maxDim, quality)
+    
+    // 1. 初始化分片上传
+    const initRes = await this.http.post<{upload_id: string, media_key: string}>(
+      '/api/v1/media/upload-parts/init',
+      { content_type: 'application/octet-stream' } // 统一伪装成二进制，零知识盲传
+    )
+    
+    const uploadId = initRes.upload_id
+    const mediaKey = initRes.media_key
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      sessionKeyBytes.buffer.slice(sessionKeyBytes.byteOffset, sessionKeyBytes.byteOffset + sessionKeyBytes.byteLength) as ArrayBuffer,
+      { name: 'AES-GCM', length: AES_KEY_LEN },
+      false,
+      ['encrypt']
+    )
+
+    let partNumber = 1
+    const parts: {etag: string, part_number: number}[] = []
+    
+    // 我们在开局先写入魔术头，然后再一个个加密 Chunk，但是 S3 的 Multipart 要求我们上传每一片的数据。
+    // 每个 Chunk 的格式: [Chunk Length 4 bytes] + [12 bytes IV] + [AES-GCM Ciphertext]
+    // 这是为了流式下载时能够精准解出每一个 Chunk 的边界。
+    let offset = 0;
+    let isFirstChunk = true;
+    
+    while (offset < compressed.size || offset === 0) {
+      const currentChunkBlob = compressed.slice(offset, offset + CHUNK_SIZE);
+      const chunkData = new Uint8Array(await currentChunkBlob.arrayBuffer());
+      
+      const iv = crypto.getRandomValues(new Uint8Array(AES_GCM_NONCE_LEN));
+      const ciphertextBuf = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        cryptoKey,
+        chunkData.buffer.slice(chunkData.byteOffset, chunkData.byteOffset + chunkData.byteLength) as ArrayBuffer
+      );
+      
+      const cipherBytes = new Uint8Array(ciphertextBuf);
+      const chunkLength = cipherBytes.length; // 不含 length prefix 自身和 IV
+      
+      let payloadLength = 4 + 12 + chunkLength;
+      if (isFirstChunk) {
+        payloadLength += 4; // SCV2
+      }
+      
+      const payload = new Uint8Array(payloadLength);
+      let pOffset = 0;
+      
+      if (isFirstChunk) {
+        payload.set(MAGIC_HEADER, pOffset);
+        pOffset += 4;
+        isFirstChunk = false;
+      }
+      
+      const view = new DataView(payload.buffer);
+      view.setUint32(pOffset, chunkLength, false); // Big endian
+      pOffset += 4;
+      
+      payload.set(iv, pOffset);
+      pOffset += 12;
+      
+      payload.set(cipherBytes, pOffset);
+
+      // 请求这片的上传 URL
+      const signRes = await this.http.post<{upload_url: string}>(
+        `/api/v1/media/upload-parts/${uploadId}/url`,
+        { media_key: mediaKey, part_number: partNumber }
+      );
+      
+      // 上传此分片
+      const uploadResp = await this.http.fetch(signRes.upload_url, {
+        method: 'PUT',
+        body: payload
+      });
+      if (!uploadResp.ok) throw new Error(`Part ${partNumber} upload failed`);
+      
+      const etag = uploadResp.headers.get('ETag') || uploadResp.headers.get('etag');
+      if (!etag) throw new Error('Missing ETag from S3 response');
+      
+      parts.push({ etag: etag.replace(/"/g, ''), part_number: partNumber });
+      
+      offset += CHUNK_SIZE;
+      partNumber++;
+      
+      if (offset >= compressed.size) break;
+    }
+    
+    // 合并分片
+    const completeRes = await this.http.post(`/api/v1/media/upload-parts/${uploadId}/complete`, {
+      media_key: mediaKey,
+      parts
+    });
+    
+    return `[img]${mediaKey}`;
+  }
+
+  /**
    * 下载加密的媒体文件
    */
   public async downloadMedia(mediaKey: string): Promise<ArrayBuffer> {
-    // MediaController GET 可以带 Auth 参数或 Headers
-    // 我们直接用 HttpClient 组合 token 头
     const token = this.http.getToken()
     const headers: Record<string, string> = {}
     if (token) {
       headers['Authorization'] = `Bearer ${token}`
     }
 
-    // 这里需要 fetch 而不能只是 JSON
     const resp = await this.http.fetch(`${this.http.getApiBase()}/api/v1/media/download?key=${encodeURIComponent(mediaKey)}`, {
       method: 'GET',
       headers
@@ -71,6 +175,71 @@ export class MediaModule {
       throw new Error(`Download failed: ${resp.status}`)
     }
     return resp.arrayBuffer()
+  }
+
+  /**
+   * 下载并流式解密媒体文件，向上兼容老版本的不加密明文图片
+   */
+  public async downloadDecryptedMedia(mediaKey: string, sessionKeyBytes: Uint8Array): Promise<ArrayBuffer> {
+    const rawBuffer = await this.downloadMedia(mediaKey);
+    const rawData = new Uint8Array(rawBuffer);
+    
+    // 检查是否有 SCV2 魔术头
+    let isEncrypted = false;
+    if (rawData.length >= MAGIC_HEADER.length) {
+      isEncrypted = Array.from(MAGIC_HEADER).every((val, i) => val === rawData[i]);
+    }
+    
+    // 如果没有加密头，说明是老版本的明文图片（向前兼容）
+    if (!isEncrypted) {
+      return rawBuffer;
+    }
+    
+    // 准备好 decryption key
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      sessionKeyBytes.buffer.slice(sessionKeyBytes.byteOffset, sessionKeyBytes.byteOffset + sessionKeyBytes.byteLength) as ArrayBuffer,
+      { name: 'AES-GCM', length: AES_KEY_LEN },
+      false,
+      ['decrypt']
+    );
+    
+    const chunks: Uint8Array[] = [];
+    let offset = 4; // Skip "SCV2"
+    const view = new DataView(rawData.buffer, rawData.byteOffset, rawData.byteLength);
+    
+    while (offset < rawData.length) {
+      if (offset + 4 > rawData.length) throw new Error('Corrupted SCV2 data: chunk length OOB');
+      const chunkLen = view.getUint32(offset, false);
+      offset += 4;
+      
+      if (offset + 12 > rawData.length) throw new Error('Corrupted SCV2 data: IV OOB');
+      const iv = rawData.slice(offset, offset + 12);
+      offset += 12;
+      
+      if (offset + chunkLen > rawData.length) throw new Error('Corrupted SCV2 data: Ciphertext OOB');
+      const cipherBytes = rawData.slice(offset, offset + chunkLen);
+      offset += chunkLen;
+      
+      const plainBuffer = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        cryptoKey,
+        cipherBytes.buffer.slice(cipherBytes.byteOffset, cipherBytes.byteOffset + cipherBytes.byteLength) as ArrayBuffer
+      );
+      
+      chunks.push(new Uint8Array(plainBuffer));
+    }
+    
+    // 拼接全部明文块
+    const totalPlainLen = chunks.reduce((acc, c) => acc + c.length, 0);
+    const fullPlain = new Uint8Array(totalPlainLen);
+    let pOffset = 0;
+    for (const c of chunks) {
+      fullPlain.set(c, pOffset);
+      pOffset += c.length;
+    }
+    
+    return fullPlain.buffer;
   }
 
   /**
