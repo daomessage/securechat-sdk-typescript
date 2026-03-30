@@ -55,6 +55,8 @@ export class MessageModule {
   public onMessage?: (msg: StoredMessage) => void
   public onStatusChange?: (status: MessageStatus) => void
   public onChannelPost?: (data: any) => void
+  /** 对方正在输入通知 */
+  public onTyping?: (data: { fromAliasId: string; conversationId: string }) => void
 
   constructor(private transport: WSTransport) {
     this.transport.onMessage(raw => this.handleFrame(raw))
@@ -163,6 +165,13 @@ export class MessageModule {
       case 'read':
         // 对方已读 → 基于 conv_id 批量标记到 seq 为止的消息
         await this.handleReceiptByConvId(env['conv_id'] as string, env['seq'] as number, 'read')
+        break
+      case 'typing':
+        // 对方正在输入 → 广播给 UI 层显示输入泡泡
+        this.onTyping?.({
+          fromAliasId: env['from'] as string,
+          conversationId: env['conv_id'] as string,
+        })
         break
       case 'channel_post':
         this.onChannelPost?.(env as any)

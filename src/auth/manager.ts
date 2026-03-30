@@ -5,8 +5,31 @@ import { HttpClient } from '../http'
 export class AuthModule {
   private http: HttpClient
 
+  private _uuid: string = ''
+
   constructor(http: HttpClient) {
     this.http = http
+  }
+
+  /**
+   * 供 SDK 内部建立 WebSocket 时调用，防误用
+   */
+  public get internalUUID(): string {
+    return this._uuid
+  }
+
+  /**
+   * 恢复会话：从本地 IndexedDB 加载身份 -> 防伪签名挑战 -> 写入 Token
+   */
+  public async restoreSession(): Promise<{ aliasId: string; nickname: string } | null> {
+    const ident = await loadIdentity()
+    if (!ident) return null
+
+    this._uuid = ident.uuid
+    const privKey = deriveIdentity(ident.mnemonic).signingKey.privateKey
+    await this.performAuthChallenge(ident.uuid, privKey)
+
+    return { aliasId: ident.aliasId, nickname: ident.nickname ?? '' }
   }
 
   /**
@@ -15,7 +38,7 @@ export class AuthModule {
   public async registerAccount(
     mnemonic: string,
     nickname: string
-  ): Promise<{ uuid: string; aliasId: string }> {
+  ): Promise<{ aliasId: string }> {
     const ident = deriveIdentity(mnemonic)
     
     // 1. PoW 防刷
@@ -71,13 +94,14 @@ export class AuthModule {
       }
     }
 
-    // 落盘身份
-    await saveIdentity(userUUID, aliasId, ident)
+    // 落盘身份（含昵称）
+    await saveIdentity(userUUID, aliasId, ident, nickname)
+    this._uuid = userUUID
 
     // 3. /auth/challenge + verify
     await this.performAuthChallenge(userUUID, ident.signingKey.privateKey)
 
-    return { uuid: userUUID, aliasId }
+    return { aliasId }
   }
 
   /**

@@ -112,16 +112,28 @@ export async function getMessage(id: string): Promise<StoredMessage | undefined>
   return db.get('messages', id)
 }
 
-export async function loadMessages(conversationId: string): Promise<StoredMessage[]> {
+export async function loadMessages(
+  conversationId: string,
+  opts?: { limit?: number; before?: number }
+): Promise<StoredMessage[]> {
   const db = await getDB()
+  const upperTime = opts?.before ?? Number.MAX_SAFE_INTEGER
   const msgs = await db.getAllFromIndex('messages', 'byConvTime',
     IDBKeyRange.bound(
       [conversationId, 0],
-      [conversationId, Number.MAX_SAFE_INTEGER]
+      [conversationId, upperTime],
+      false,
+      !!opts?.before // 有 before 时排除边界值（不含该时间戳的消息）
     )
-  )
-  return msgs as StoredMessage[]
+  ) as StoredMessage[]
+
+  // 如果有 limit，返回最后 N 条（时间序升序，取末尾 N 条即最新）
+  if (opts?.limit && msgs.length > opts.limit) {
+    return msgs.slice(msgs.length - opts.limit)
+  }
+  return msgs
 }
+
 
 export async function clearConversationMessages(conversationId: string): Promise<void> {
   const db = await getDB()

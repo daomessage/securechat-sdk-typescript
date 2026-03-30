@@ -9,7 +9,13 @@ import { MediaModule } from './media/manager'
 import { PushModule } from './push/manager'
 import { ChannelsModule } from './channels/manager'
 
-type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post'
+// 增加 typing 事件
+type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post' | 'typing'
+
+export interface TypingEvent {
+  fromAliasId: string
+  conversationId: string
+}
 
 export class SecureChatClient {
   public readonly transport: RobustWSTransport
@@ -23,14 +29,19 @@ export class SecureChatClient {
   public http: HttpClient
 
   private eventListeners = {
-    message: new Set<(msg: StoredMessage) => void>(),
+    message:      new Set<(msg: StoredMessage) => void>(),
     status_change: new Set<(status: MessageStatus) => void>(),
     network_state: new Set<(state: NetworkState) => void>(),
-    channel_post: new Set<(data: any) => void>(),
+    channel_post:  new Set<(data: any) => void>(),
+    typing:        new Set<(data: TypingEvent) => void>(),
   }
 
-  constructor(apiBase: string = '') {
-    this.http = new HttpClient(apiBase)
+  // 核心机密：固化专属中继节点 API，社交关系全网唯一绑定，不可转移
+  // ⚠️ 上线前必须改为生产域名，不得作为构造函数参数传入
+  public static readonly CORE_API_BASE = 'http://localhost:8080'
+
+  constructor() {
+    this.http = new HttpClient(SecureChatClient.CORE_API_BASE)
 
     this.transport = new RobustWSTransport()
     this.messaging = new MessageModule(this.transport)
@@ -53,19 +64,39 @@ export class SecureChatClient {
       this.eventListeners.channel_post.forEach((fn) => fn(data))
     }
 
+    // 新增：typing 事件转发
+    this.messaging.onTyping = (data) => {
+      this.eventListeners.typing.forEach((fn) => fn(data))
+    }
+
     this.transport.onNetworkStateChange((state) => {
       this.eventListeners.network_state.forEach((fn) => fn(state))
-    } )
+    })
   }
 
   /**
-   * 建立连接：给定 WSS 地址与 JWT 令牌，并且绑定内部的 HTTP Token
+   * 恢复历史会话：从本地加载身份鉴权，成功后即可调用 connect
+   * 返回值新增 nickname，App 不再需要从 localStorage 读取昵称
    */
-  public connect(url: string, token: string): void {
-    // 同步给内部的 Http 客户端，以便触发相关的 API（如拉取历史、上传图片时免传 token）
-    this.http.setToken(token)
+  public async restoreSession(): Promise<{ aliasId: string; nickname: string } | null> {
+    return this.auth.restoreSession()
+  }
 
-    const fullUrl = `${url}${url.includes('?') ? '&' : '?'}token=${token}`
+  /**
+   * 建立连接：自动从 AuthModule 与 HTTP 获取底层验证标识，封装并连接 WSS
+   */
+  public connect(): void {
+    const uuid = this.auth.internalUUID
+    const token = this.http.getToken()
+    
+    if (!uuid || !token) {
+      throw new Error('未发现本地身份与令牌，请先注册或恢复会话 (registerAccount / restoreSession)')
+    }
+
+    let url = this.http.getApiBase()
+    url = url.replace(/^http/, 'ws')
+    const fullUrl = `${url}/ws?user_uuid=${uuid}&token=${token}`
+
     this.transport.connect(fullUrl)
   }
 
@@ -84,18 +115,25 @@ export class SecureChatClient {
   }
 
   /**
-   * 事件订阅
+   * 事件订阅 — 返回 unsubscribe 函数，可直接在 useEffect return 中调用
+   * @example
+   * useEffect(() => {
+   *   return client.on('message', handleMsg)  // 自动解绑
+   * }, [])
    */
-  public on(event: 'message', listener: (msg: StoredMessage) => void): void
-  public on(event: 'status_change', listener: (status: MessageStatus) => void): void
-  public on(event: 'network_state', listener: (state: NetworkState) => void): void
-  public on(event: 'channel_post', listener: (data: any) => void): void
-  public on(event: ClientEvent, listener: any): void {
+  public on(event: 'message',      listener: (msg: StoredMessage) => void): () => void
+  public on(event: 'status_change', listener: (status: MessageStatus) => void): () => void
+  public on(event: 'network_state', listener: (state: NetworkState) => void): () => void
+  public on(event: 'channel_post',  listener: (data: any) => void): () => void
+  public on(event: 'typing',        listener: (data: TypingEvent) => void): () => void
+  public on(event: ClientEvent, listener: any): () => void {
     this.eventListeners[event].add(listener)
+    // 返回 unsubscribe 函数，与 React useEffect return 完美配合
+    return () => this.eventListeners[event].delete(listener)
   }
 
   /**
-   * 移除事件订阅
+   * 移除事件订阅（on() 已返回 unsubscribe，推荐用 on() 的返回值代替此方法）
    */
   public off(event: ClientEvent, listener: any): void {
     this.eventListeners[event].delete(listener)
@@ -111,7 +149,26 @@ export class SecureChatClient {
   }
 
   /**
-   * 发送正在输入状态
+   * 发送图片消息：压缩、盲加密上传、拼接协议发回
+   * @param thumbnail 可选，Base64 低分辨率骨架缩略图，供接收方在高清图加载前展示
+   */
+  public async sendImage(
+    conversationId: string,
+    toAliasId: string,
+    file: File,
+    thumbnail?: string
+  ): Promise<string> {
+    const mediaUri = await this.media.uploadEncryptedFile(file, conversationId)
+    const key = mediaUri.replace('[img]', '')
+    // 如果调用方提供了 thumbnail，写入 payload 供接收方骨架屏使用
+    const payload = thumbnail
+      ? JSON.stringify({ type: 'image', key, thumbnail })
+      : JSON.stringify({ type: 'image', key })
+    return this.sendMessage(conversationId, toAliasId, payload)
+  }
+
+  /**
+   * 发送正在输入状态（含节流，建议调用方在 300ms 防抖后触发）
    */
   public sendTyping(conversationId: string, toAliasId: string): void {
     this.messaging.sendTyping(toAliasId, conversationId)
@@ -128,10 +185,15 @@ export class SecureChatClient {
   // ── 收件箱与持久化历史获取 ─────────────────────────────────────
 
   /**
-   * 获取会话的所有历史消息（来自 SDK 内部持久化数据库 IndexedDB）
+   * 获取会话的历史消息（来自 SDK 内部持久化数据库 IndexedDB）
+   * @param opts.limit   最多返回条数（默认全量）
+   * @param opts.before  只返回时间戳小于此值的消息（用于分页加载更早消息）
    */
-  public async getHistory(conversationId: string): Promise<StoredMessage[]> {
-    return loadMessages(conversationId)
+  public async getHistory(
+    conversationId: string,
+    opts?: { limit?: number; before?: number }
+  ): Promise<StoredMessage[]> {
+    return loadMessages(conversationId, opts)
   }
 
   /**
@@ -142,14 +204,14 @@ export class SecureChatClient {
   }
 
   /**
-   * 清通某个会话历史
+   * 清除某个会话历史
    */
   public async clearHistory(conversationId: string): Promise<void> {
     return clearConversationMessages(conversationId)
   }
 
   /**
-   * 清通所有会话历史
+   * 清除所有会话历史
    */
   public async clearAllHistory(): Promise<void> {
     return clearAllMessages()

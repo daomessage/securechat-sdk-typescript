@@ -10,9 +10,10 @@ import { toBase64, fromBase64 } from './index'
 const DB_NAME = 'securechat'
 const DB_VERSION = 1
 
-interface StoredIdentity {
+export interface StoredIdentity {
   uuid: string
   aliasId: string
+  nickname: string                     // 昵称，由 registerAccount 写入，restoreSession 读回
   mnemonic: string                     // 🔴 开发模式存储；生产环境使用设备 Keychain 加密
   signingPublicKey: string             // Base64
   ecdhPublicKey: string                // Base64
@@ -64,12 +65,14 @@ async function getDB(): Promise<IDBPDatabase> {
 export async function saveIdentity(
   uuid: string,
   aliasId: string,
-  identity: Identity
+  identity: Identity,
+  nickname: string = ''
 ): Promise<void> {
   const db = await getDB()
   const record: StoredIdentity = {
     uuid,
     aliasId,
+    nickname,
     mnemonic: identity.mnemonic,
     signingPublicKey: toBase64(identity.signingKey.publicKey),
     ecdhPublicKey: toBase64(identity.ecdhKey.publicKey),

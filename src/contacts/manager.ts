@@ -71,7 +71,7 @@ export class ContactsModule {
   /**
    * 按 Alias ID 查找用户
    */
-  public async lookupUser(aliasId: string): Promise<{ alias_id: string; nickname: string; uuid: string }> {
+  public async lookupUser(aliasId: string): Promise<{ alias_id: string; nickname: string; x25519_public_key: string }> {
     return this.http.get(`/api/v1/users/${encodeURIComponent(aliasId)}`)
   }
 }

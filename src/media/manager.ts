@@ -3,7 +3,8 @@
  */
 
 import { HttpClient } from '../http'
-
+import { loadSession } from '../keys/store'
+import { fromBase64 } from '../keys/index'
 export interface UploadURLResponse {
   upload_url: string
   media_key: string
@@ -57,7 +58,11 @@ export class MediaModule {
    * 分片上传加密大文件 (由于原生 AES-GCM 限制，采用基于 Chunk 的流式加密)
    * 返回 "[img]media_key" （此处重用业务层格式）
    */
-  public async uploadEncryptedFile(file: File, sessionKeyBytes: Uint8Array, maxDim: number = 1920, quality: number = 0.85): Promise<string> {
+  public async uploadEncryptedFile(file: File, conversationId: string, maxDim: number = 1920, quality: number = 0.85): Promise<string> {
+    const session = await loadSession(conversationId)
+    if (!session) throw new Error(`Cannot find session for conversation: ${conversationId}`)
+    const sessionKeyBytes = fromBase64(session.sessionKeyBase64)
+
     const compressed = await this.compressImage(file, maxDim, quality)
     
     // 1. 初始化分片上传
@@ -173,7 +178,11 @@ export class MediaModule {
   /**
    * 下载并流式解密媒体文件
    */
-  public async downloadDecryptedMedia(mediaKey: string, sessionKeyBytes: Uint8Array): Promise<ArrayBuffer> {
+  public async downloadDecryptedMedia(mediaKey: string, conversationId: string): Promise<ArrayBuffer> {
+    const session = await loadSession(conversationId)
+    if (!session) throw new Error(`Cannot find session for conversation: ${conversationId}`)
+    const sessionKeyBytes = fromBase64(session.sessionKeyBase64)
+
     const rawBuffer = await this.downloadMedia(mediaKey);
     const rawData = new Uint8Array(rawBuffer);
     
