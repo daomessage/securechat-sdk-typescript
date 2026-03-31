@@ -82,13 +82,23 @@ export class AuthModule {
       aliasId = regData.alias_id
     } catch (e: any) {
       if (e.message?.includes('409')) {
-        // 409: 该公钥已经注册过，本地必须有 UUID
-        const stored = await loadIdentity()
-        if (!stored) {
-          throw new Error('此公钥已注册，但本地无身份信息记录，请使用“恢复账户”登录。')
+        // 409: 公钥已注册，从错误信息中解析 uuid 和 alias_id
+        try {
+          const body = JSON.parse(e.message.replace(/^409:\s*/, ''))
+          userUUID = body.uuid
+          aliasId = body.alias_id
+        } catch {
+          // 回退：尝试从本地存储恢复
+          const stored = await loadIdentity()
+          if (!stored) {
+            throw new Error('此公钥已注册，服务端未返回身份信息。请联系管理员。')
+          }
+          userUUID = stored.uuid
+          aliasId = stored.aliasId
         }
-        userUUID = stored.uuid
-        aliasId = stored.aliasId
+        if (!userUUID) {
+          throw new Error('恢复失败：无法获取用户标识')
+        }
       } else {
         throw new Error('注册失败: ' + e.message)
       }

@@ -25,98 +25,62 @@ export class ChannelsModule {
    */
   public async search(query: string): Promise<ChannelInfo[]> {
     if (!query.trim()) return []
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels/search?q=${encodeURIComponent(query)}`, {
-      headers: { Authorization: `Bearer ${this.http.getToken()}` },
-    })
-    if (!res.ok) throw new Error('Search failed')
-    return ((await res.json()) || []) as ChannelInfo[]
+    const res = await this.http.get<ChannelInfo[]>(`/api/v1/channels/search?q=${encodeURIComponent(query)}`)
+    return Array.isArray(res) ? res : []
   }
 
   /**
    * Get channels subscribed by current user
    */
   public async getMine(): Promise<ChannelInfo[]> {
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels/mine`, {
-      headers: { Authorization: `Bearer ${this.http.getToken()}` },
-    })
-    if (!res.ok) throw new Error('Get mine failed')
-    return ((await res.json()) || []) as ChannelInfo[]
+    const res = await this.http.get<ChannelInfo[]>('/api/v1/channels/mine')
+    return Array.isArray(res) ? res : []
   }
 
   /**
    * Get channel details
    */
   public async getDetail(channelId: string): Promise<ChannelInfo> {
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels/${channelId}`, {
-      headers: { Authorization: `Bearer ${this.http.getToken()}` },
-    })
-    if (!res.ok) throw new Error('Get detail failed')
-    return await res.json() as ChannelInfo
+    return this.http.get<ChannelInfo>(`/api/v1/channels/${channelId}`)
   }
 
   /**
    * Create a new channel
    */
   public async create(name: string, description: string, isPublic: boolean = true): Promise<{ channel_id: string }> {
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.http.getToken()}`,
-      },
-      body: JSON.stringify({ name, description, is_public: isPublic }),
+    return this.http.post<{ channel_id: string }>('/api/v1/channels', {
+      name, description, is_public: isPublic,
     })
-    if (!res.ok) throw new Error('Create failed')
-    return await res.json()
   }
 
   /**
    * Subscribe to a channel
    */
   public async subscribe(channelId: string): Promise<void> {
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels/${channelId}/subscribe`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.http.getToken()}` },
-    })
-    if (!res.ok) throw new Error('Subscribe failed')
+    await this.http.post(`/api/v1/channels/${channelId}/subscribe`, {})
   }
 
   /**
    * Unsubscribe from a channel
    */
   public async unsubscribe(channelId: string): Promise<void> {
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels/${channelId}/subscribe`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${this.http.getToken()}` },
-    })
-    if (!res.ok) throw new Error('Unsubscribe failed')
+    await this.http.delete(`/api/v1/channels/${channelId}/subscribe`)
   }
 
   /**
    * Post a message to a channel
    */
   public async postMessage(channelId: string, content: string, type: string = 'text'): Promise<{ post_id: string }> {
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels/${channelId}/posts`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.http.getToken()}`,
-      },
-      body: JSON.stringify({ type, content }),
+    return this.http.post<{ post_id: string }>(`/api/v1/channels/${channelId}/posts`, {
+      type, content,
     })
-    if (!res.ok) throw new Error('Post failed')
-    return await res.json()
   }
 
   /**
    * Get channel post history
    */
   public async getPosts(channelId: string): Promise<ChannelPost[]> {
-    const res = await this.http.fetch(`${this.http.getApiBase()}/api/v1/channels/${channelId}/posts`, {
-      headers: { Authorization: `Bearer ${this.http.getToken()}` },
-    })
-    if (!res.ok) throw new Error('Get posts failed')
-    const items = await res.json()
+    const items = await this.http.get<ChannelPost[]>(`/api/v1/channels/${channelId}/posts`)
     return Array.isArray(items) ? items : []
   }
 

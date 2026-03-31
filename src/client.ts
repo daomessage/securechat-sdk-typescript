@@ -38,7 +38,7 @@ export class SecureChatClient {
 
   // 核心机密：固化专属中继节点 API，社交关系全网唯一绑定，不可转移
   // ⚠️ 上线前必须改为生产域名，不得作为构造函数参数传入
-  public static readonly CORE_API_BASE = 'http://localhost:8080'
+  public static readonly CORE_API_BASE = 'https://api.webtool.space'
 
   constructor() {
     this.http = new HttpClient(SecureChatClient.CORE_API_BASE)
