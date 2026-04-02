@@ -15,6 +15,7 @@ export interface StoredMessage {
   caption?: string
   seq?: number           // 服务端分配的消息序号，已读回执需要
   fromAliasId?: string   // 发送方 alias_id，回执路由需要
+  replyToId?: string     // 引用回复的原消息 ID（架构 §SendOptions.replyTo）
 }
 
 export interface OutboxIntent {
@@ -23,6 +24,7 @@ export interface OutboxIntent {
   toAliasId: string
   text: string
   addedAt: number
+  replyToId?: string    // 引用回复的原消息 ID
 }
 
 let _db: IDBPDatabase | null = null

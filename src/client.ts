@@ -1,6 +1,6 @@
 import { MessageModule, WSTransport, type OutgoingMessage } from './messaging'
 import { RobustWSTransport, type NetworkState } from './messaging/transport'
-import { loadMessages, getMessage, clearConversationMessages, clearAllMessages, type StoredMessage } from './messaging/store'
+import { loadMessages, getMessage, saveMessage, clearConversationMessages, clearAllMessages, type StoredMessage } from './messaging/store'
 import type { MessageStatus } from './messaging'
 import { HttpClient } from './http'
 import { AuthModule } from './auth/manager'
@@ -9,8 +9,8 @@ import { MediaModule } from './media/manager'
 import { PushModule } from './push/manager'
 import { ChannelsModule } from './channels/manager'
 
-// 增加 typing 事件
-type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post' | 'typing'
+// 增加 typing 和 goaway 事件
+type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post' | 'typing' | 'goaway'
 
 export interface TypingEvent {
   fromAliasId: string
@@ -34,6 +34,7 @@ export class SecureChatClient {
     network_state: new Set<(state: NetworkState) => void>(),
     channel_post:  new Set<(data: any) => void>(),
     typing:        new Set<(data: TypingEvent) => void>(),
+    goaway:        new Set<(reason: string) => void>(),
   }
 
   // 核心机密：固化专属中继节点 API，社交关系全网唯一绑定，不可转移
@@ -71,6 +72,11 @@ export class SecureChatClient {
 
     this.transport.onNetworkStateChange((state) => {
       this.eventListeners.network_state.forEach((fn) => fn(state))
+    })
+
+    // 新增：GOAWAY 事件转发（被其他设备踢下线）
+    this.transport.onGoaway((reason) => {
+      this.eventListeners.goaway.forEach((fn) => fn(reason))
     })
   }
 
@@ -126,6 +132,7 @@ export class SecureChatClient {
   public on(event: 'network_state', listener: (state: NetworkState) => void): () => void
   public on(event: 'channel_post',  listener: (data: any) => void): () => void
   public on(event: 'typing',        listener: (data: TypingEvent) => void): () => void
+  public on(event: 'goaway',        listener: (reason: string) => void): () => void
   public on(event: ClientEvent, listener: any): () => void {
     this.eventListeners[event].add(listener)
     // 返回 unsubscribe 函数，与 React useEffect return 完美配合
@@ -143,9 +150,10 @@ export class SecureChatClient {
 
   /**
    * 发送端到端加密消息（自动入队或发送）
+   * @param replyToId 可选，引用回复的原消息 ID（架构 §SendOptions.replyTo）
    */
-  public async sendMessage(conversationId: string, toAliasId: string, text: string): Promise<string> {
-    return this.messaging.send({ conversationId, toAliasId, text })
+  public async sendMessage(conversationId: string, toAliasId: string, text: string, replyToId?: string): Promise<string> {
+    return this.messaging.send({ conversationId, toAliasId, text, replyToId })
   }
 
   /**
@@ -180,6 +188,32 @@ export class SecureChatClient {
    */
   public markAsRead(conversationId: string, maxSeq: number, toAliasId: string): void {
     this.messaging.sendRead(conversationId, maxSeq, toAliasId)
+  }
+
+  /**
+   * 撤回消息（架构 §4.2 V1.1 新增）
+   * 仅可撤回自己发的消息，不限时间
+   * @param messageId 要撤回的消息 UUID
+   * @param toAliasId 对方 alias_id
+   * @param conversationId 会话 ID
+   */
+  public async retractMessage(messageId: string, toAliasId: string, conversationId: string): Promise<void> {
+    // 1. 发送撤回帧给服务端
+    this.messaging.sendRetract(messageId, toAliasId, conversationId)
+
+    // 2. 本地立即替换为系统消息
+    const original = await this.getMessageData(messageId)
+    const retractedMsg: StoredMessage = {
+      id: messageId,
+      conversationId,
+      text: '消息已撤回',
+      isMe: true,
+      time: original?.time ?? Date.now(),
+      status: 'delivered',
+      msgType: 'retracted',
+    }
+    await saveMessage(retractedMsg)
+    this.eventListeners.message.forEach(fn => fn(retractedMsg))
   }
 
   // ── 收件箱与持久化历史获取 ─────────────────────────────────────

@@ -8,6 +8,7 @@ import { getSessionKey } from '../friends/index'
 import { saveOfflineMessage, drainOfflineMessages } from '../keys/store'
 import { 
   saveMessage, 
+  getMessage,
   updateMessageStatus, 
   updateMessageStatusByConvId,
   addToOutbox, 
@@ -23,6 +24,7 @@ export interface OutgoingMessage {
   conversationId: string
   toAliasId: string
   text: string
+  replyToId?: string     // 引用回复的消息 ID（架构 §SendOptions.replyTo）
 }
 
 export interface IncomingMessage {
@@ -68,13 +70,20 @@ export class MessageModule {
   async send(msg: OutgoingMessage): Promise<string> {
     const internalId = 'local-' + Math.random().toString(36).slice(2)
 
+    // 如果有 replyToId，包裹进加密前的 text JSON 中（零知识原则：服务端看不到）
+    let textForWire = msg.text
+    if (msg.replyToId) {
+      textForWire = JSON.stringify({ text: msg.text, replyToId: msg.replyToId })
+    }
+
     // 1. 马上存入发件箱逻辑 (Outbox Intent)
     const intent: OutboxIntent = {
       internalId,
       conversationId: msg.conversationId,
       toAliasId: msg.toAliasId,
-      text: msg.text,
-      addedAt: Date.now()
+      text: textForWire,
+      addedAt: Date.now(),
+      replyToId: msg.replyToId,
     }
     await addToOutbox(intent)
 
@@ -82,10 +91,11 @@ export class MessageModule {
     const storedMsg: StoredMessage = {
       id: internalId,
       conversationId: msg.conversationId,
-      text: msg.text,
+      text: msg.text,   // 本地存储用原始 text，不包含 replyToId wrapper
       isMe: true,
       time: intent.addedAt,
-      status: 'sending'
+      status: 'sending',
+      replyToId: msg.replyToId,
     }
     await saveMessage(storedMsg)
     
@@ -144,6 +154,19 @@ export class MessageModule {
     }
   }
 
+  /** 发送消息撤回帧（架构 §4.2 V1.1 新增） */
+  sendRetract(messageId: string, toAliasId: string, convId: string): void {
+    if (this.transport.isConnected) {
+      this.transport.send(JSON.stringify({
+        type: 'retract',
+        id: messageId,
+        to: toAliasId,
+        conv_id: convId,
+        crypto_v: 1,
+      }))
+    }
+  }
+
   // ── 接收帧分发（解析并路由）────────────────────────────────
 
   private async handleFrame(raw: string): Promise<void> {
@@ -176,6 +199,9 @@ export class MessageModule {
       case 'channel_post':
         this.onChannelPost?.(env as any)
         break
+      case 'retract':
+        await this.handleRetract(env['id'] as string, env['from'] as string, env['conv_id'] as string)
+        break
       case 'sync_batch':
         // Handle server pushing batch missing messages.
         break
@@ -189,7 +215,17 @@ export class MessageModule {
   ): Promise<void> {
     try {
       const sessionKey = await getSessionKey(env.conv_id)
-      const text = await decryptMessage(env, sessionKey)
+      let text = await decryptMessage(env, sessionKey)
+
+      // 提取 replyToId（如果解密后的 text 是包含 replyToId 的 JSON 包裹）
+      let replyToId: string | undefined
+      try {
+        const parsed = JSON.parse(text)
+        if (parsed.replyToId && typeof parsed.text === 'string') {
+          text = parsed.text
+          replyToId = parsed.replyToId
+        }
+      } catch { /* 非 JSON，纯文本消息 */ }
 
       const msg: StoredMessage = {
         id: env.id,
@@ -200,6 +236,7 @@ export class MessageModule {
         status: 'delivered',
         seq: env.seq,
         fromAliasId: env.from,
+        replyToId,
       }
 
       // 1. 强制写入本地 IndexedDB 后再返回
@@ -255,6 +292,31 @@ export class MessageModule {
     for (const intent of intents) {
       await this._trySendIntent(intent)
     }
+  }
+
+  // ── 消息撤回处理（架构 §4.2 V1.1 新增）──────────────────
+
+  private async handleRetract(messageId: string, fromAliasId: string, convId: string): Promise<void> {
+    if (!messageId || !convId) return
+
+    // 查找原消息
+    const original = await getMessage(messageId)
+
+    // 替换为系统消息 "消息已撤回"
+    const retractedMsg: StoredMessage = {
+      id: messageId,
+      conversationId: convId,
+      text: '\u6d88\u606f\u5df2\u64a4\u56de',
+      isMe: original?.isMe ?? false,
+      time: original?.time ?? Date.now(),
+      status: 'delivered',
+      msgType: 'retracted',
+      fromAliasId,
+    }
+    await saveMessage(retractedMsg)
+
+    // 通知 UI 层更新
+    this.onMessage?.(retractedMsg)
   }
 }
 

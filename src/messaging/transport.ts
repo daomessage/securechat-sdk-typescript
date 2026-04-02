@@ -15,6 +15,7 @@ export class RobustWSTransport implements WSTransport {
   private openHandlers: (() => void)[] = []
   private closeHandlers: (() => void)[] = []
   private networkListeners: NetworkListener[] = []
+  private goawayListeners: ((reason: string) => void)[] = []
 
   private reconnectAttempts = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -44,6 +45,15 @@ export class RobustWSTransport implements WSTransport {
     return () => {
       const idx = this.networkListeners.indexOf(fn)
       if (idx >= 0) this.networkListeners.splice(idx, 1)
+    }
+  }
+
+  /** 监听 GOAWAY 帧（被其他设备踢下线） */
+  onGoaway(fn: (reason: string) => void) {
+    this.goawayListeners.push(fn)
+    return () => {
+      const idx = this.goawayListeners.indexOf(fn)
+      if (idx >= 0) this.goawayListeners.splice(idx, 1)
     }
   }
 
@@ -79,6 +89,18 @@ export class RobustWSTransport implements WSTransport {
     }
 
     this.ws.onmessage = (e) => {
+      // 拦截 goaway 帧：停止重连 + 通知上层
+      try {
+        const parsed = JSON.parse(e.data)
+        if (parsed.type === 'goaway') {
+          const reason = parsed.payload?.reason || parsed.reason || 'unknown'
+          console.warn('[SDK] GOAWAY received:', reason)
+          this.intentionalClose = true  // 阻止自动重连
+          this.goawayListeners.forEach(fn => fn(reason))
+          this.disconnect()
+          return
+        }
+      } catch { /* 非 JSON 或无 type 字段，继续正常处理 */ }
       this.messageHandlers.forEach(h => h(e.data))
     }
 
