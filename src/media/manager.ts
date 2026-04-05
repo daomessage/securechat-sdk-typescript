@@ -1,5 +1,6 @@
 /**
- * sdk-typescript/src/media/manager.ts — 图片消息上传/下载（零知识盲中转）
+ * sdk-typescript/src/media/manager.ts — 多媒体上传/下载（零知识盲中转）
+ * 支持图片（压缩）、文件（原始）、语音（原始）三类
  */
 
 import { HttpClient } from '../http'
@@ -52,6 +53,27 @@ export class MediaModule {
     }
 
     return `[img]${uploadRes.media_key}`
+  }
+
+  /**
+   * 上传通用文件（不压缩，直接加密分片上传）
+   * 返回 "[file]media_key|original_name|size_bytes"
+   */
+  public async uploadFile(file: File, conversationId: string): Promise<string> {
+    const mediaKey = await this.encryptAndUpload(file, conversationId)
+    return `[file]${mediaKey}|${file.name}|${file.size}`
+  }
+
+  /**
+   * 上传语音消息（不压缩，直接加密分片上传）
+   * @param durationMs 录音时长（毫秒）
+   * 返回 "[voice]media_key|duration_ms"
+   */
+  public async uploadVoice(blob: Blob, conversationId: string, durationMs: number): Promise<string> {
+    // Blob → File wrapper
+    const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || 'audio/webm' })
+    const mediaKey = await this.encryptAndUpload(file, conversationId)
+    return `[voice]${mediaKey}|${durationMs}`
   }
 
   /**
@@ -146,12 +168,95 @@ export class MediaModule {
     }
     
     // 合并分片
-    const completeRes = await this.http.post(`/api/v1/media/upload-parts/${encodeURIComponent(uploadId)}/complete`, {
+    await this.http.post(`/api/v1/media/upload-parts/${encodeURIComponent(uploadId)}/complete`, {
       media_key: mediaKey,
       parts
     });
     
     return `[img]${mediaKey}`;
+  }
+
+  /**
+   * 通用加密分片上传（共享逻辑）
+   * @returns media_key
+   */
+  private async encryptAndUpload(file: File | Blob, conversationId: string): Promise<string> {
+    const session = await loadSession(conversationId)
+    if (!session) throw new Error(`Cannot find session for conversation: ${conversationId}`)
+    const sessionKeyBytes = fromBase64(session.sessionKeyBase64)
+
+    const initRes = await this.http.post<{upload_id: string, media_key: string}>(
+      '/api/v1/media/upload-parts/init',
+      { content_type: 'application/octet-stream' }
+    )
+    
+    const uploadId = initRes.upload_id
+    const mediaKey = initRes.media_key
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      sessionKeyBytes.buffer.slice(sessionKeyBytes.byteOffset, sessionKeyBytes.byteOffset + sessionKeyBytes.byteLength) as ArrayBuffer,
+      { name: 'AES-GCM', length: AES_KEY_LEN },
+      false,
+      ['encrypt']
+    )
+
+    let partNumber = 1
+    const parts: {etag: string, part_number: number}[] = []
+    let offset = 0;
+    const totalSize = file.size;
+    
+    while (offset < totalSize || offset === 0) {
+      const currentChunkBlob = file.slice(offset, offset + CHUNK_SIZE);
+      const chunkData = new Uint8Array(await currentChunkBlob.arrayBuffer());
+      
+      const iv = crypto.getRandomValues(new Uint8Array(AES_GCM_NONCE_LEN));
+      const ciphertextBuf = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        cryptoKey,
+        chunkData.buffer.slice(chunkData.byteOffset, chunkData.byteOffset + chunkData.byteLength) as ArrayBuffer
+      );
+      
+      const cipherBytes = new Uint8Array(ciphertextBuf);
+      const chunkLength = cipherBytes.length;
+      const payloadLength = 4 + 12 + chunkLength;
+      const payload = new Uint8Array(payloadLength);
+      let pOffset = 0;
+      const view = new DataView(payload.buffer);
+      view.setUint32(pOffset, chunkLength, false);
+      pOffset += 4;
+      payload.set(iv, pOffset);
+      pOffset += 12;
+      payload.set(cipherBytes, pOffset);
+
+      const uploadResp = await this.http.fetch(
+        `${this.http.getApiBase()}/api/v1/media/upload-parts/${encodeURIComponent(uploadId)}/chunk?mediaKey=${encodeURIComponent(mediaKey)}&partNumber=${partNumber}`,
+        {
+          method: 'POST',
+          headers: this.http.getHeaders({ 'Content-Type': 'application/octet-stream' }),
+          body: payload
+        }
+      );
+      if (!uploadResp.ok) {
+        const errorText = await uploadResp.text();
+        throw new Error(`Part ${partNumber} upload proxy failed: ${errorText}`);
+      }
+      
+      const resJson = await uploadResp.json() as { etag: string };
+      const etag = resJson.etag;
+      if (!etag) throw new Error('Missing ETag from S3 proxy response');
+      parts.push({ etag: etag.replace(/"/g, ''), part_number: partNumber });
+      
+      offset += CHUNK_SIZE;
+      partNumber++;
+      if (offset >= totalSize) break;
+    }
+    
+    await this.http.post(`/api/v1/media/upload-parts/${encodeURIComponent(uploadId)}/complete`, {
+      media_key: mediaKey,
+      parts
+    });
+    
+    return mediaKey;
   }
 
   /**

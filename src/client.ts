@@ -8,6 +8,7 @@ import { ContactsModule } from './contacts/manager'
 import { MediaModule } from './media/manager'
 import { PushModule } from './push/manager'
 import { ChannelsModule } from './channels/manager'
+import { VanityModule, type PaymentConfirmedEvent } from './vanity/manager'
 
 // 增加 typing 和 goaway 事件
 type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post' | 'typing' | 'goaway'
@@ -26,6 +27,8 @@ export class SecureChatClient {
   public readonly media: MediaModule
   public readonly push: PushModule
   public readonly channels: ChannelsModule
+  /** 靑号搜索、购买、支付回调 — T-095 */
+  public readonly vanity: VanityModule
   public http: HttpClient
 
   private eventListeners = {
@@ -52,6 +55,7 @@ export class SecureChatClient {
     this.media = new MediaModule(this.http)
     this.push = new PushModule(this.http)
     this.channels = new ChannelsModule(this.http)
+    this.vanity = new VanityModule(this.http)
 
     this.messaging.onMessage = (msg) => {
       this.eventListeners.message.forEach((fn) => fn(msg))
@@ -78,6 +82,11 @@ export class SecureChatClient {
     this.transport.onGoaway((reason) => {
       this.eventListeners.goaway.forEach((fn) => fn(reason))
     })
+
+    // 路由 payment_confirmed WS 帧到 VanityModule（T-095）
+    this.messaging.onPaymentConfirmed = (data) => {
+      this.vanity._handlePaymentConfirmed(data as PaymentConfirmedEvent)
+    }
   }
 
   /**
@@ -172,6 +181,39 @@ export class SecureChatClient {
     const payload = thumbnail
       ? JSON.stringify({ type: 'image', key, thumbnail })
       : JSON.stringify({ type: 'image', key })
+    return this.sendMessage(conversationId, toAliasId, payload)
+  }
+
+  /**
+   * 发送文件消息：直接加密上传（不压缩）
+   * 消息协议: [file]media_key|filename|size
+   */
+  public async sendFile(
+    conversationId: string,
+    toAliasId: string,
+    file: File
+  ): Promise<string> {
+    const mediaUri = await this.media.uploadFile(file, conversationId)
+    // mediaUri = "[file]key|name|size"，解析出各字段打包成 JSON payload
+    const parts = mediaUri.replace('[file]', '').split('|')
+    const payload = JSON.stringify({ type: 'file', key: parts[0], name: parts[1], size: Number(parts[2]) })
+    return this.sendMessage(conversationId, toAliasId, payload)
+  }
+
+  /**
+   * 发送语音消息：录音 Blob 直接加密上传
+   * @param durationMs 录音时长（毫秒），前端 MediaRecorder 计时
+   * 消息协议: [voice]media_key|duration_ms
+   */
+  public async sendVoice(
+    conversationId: string,
+    toAliasId: string,
+    blob: Blob,
+    durationMs: number
+  ): Promise<string> {
+    const mediaUri = await this.media.uploadVoice(blob, conversationId, durationMs)
+    const parts = mediaUri.replace('[voice]', '').split('|')
+    const payload = JSON.stringify({ type: 'voice', key: parts[0], duration: Number(parts[1]) })
     return this.sendMessage(conversationId, toAliasId, payload)
   }
 

@@ -79,3 +79,16 @@ export { type EstablishedSession } from './friends/index'
 export { type MessageEnvelope } from './crypto/index'
 export { RobustWSTransport } from './messaging/transport'
 export { MessageModule } from './messaging/index'
+
+// ── 靓号模块（T-095）————————————————————————————————————————
+export {
+  VanityModule,
+  type VanityItem,
+  type PurchaseOrder,
+  type ReserveOrder,
+  type OrderStatus,
+  type PaymentConfirmedEvent,
+} from './vanity/manager'
+
+// ── 频道交易类型（T-096）——————————————————————————————————————
+export { type ChannelTradeOrder } from './channels/manager'

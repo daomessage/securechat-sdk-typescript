@@ -59,6 +59,8 @@ export class MessageModule {
   public onChannelPost?: (data: any) => void
   /** 对方正在输入通知 */
   public onTyping?: (data: { fromAliasId: string; conversationId: string }) => void
+  /** 链上支付确认通知（pay-worker 确认后 WS 推送，由 VanityModule 订阅）*/
+  public onPaymentConfirmed?: (data: { type: string; order_id: string; ref_id: string }) => void
 
   constructor(private transport: WSTransport) {
     this.transport.onMessage(raw => this.handleFrame(raw))
@@ -201,6 +203,10 @@ export class MessageModule {
         break
       case 'retract':
         await this.handleRetract(env['id'] as string, env['from'] as string, env['conv_id'] as string)
+        break
+      case 'payment_confirmed':
+        // pay-worker 链上确认 → 路由给 VanityModule 广播给订阅者
+        this.onPaymentConfirmed?.(env as { type: string; order_id: string; ref_id: string })
         break
       case 'sync_batch':
         // Handle server pushing batch missing messages.

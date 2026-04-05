@@ -1,6 +1,8 @@
 import { deriveIdentity, signChallenge, toBase64 } from '../keys/index'
 import { loadIdentity, saveIdentity } from '../keys/store'
 import { HttpClient } from '../http'
+import { sha256 } from '@noble/hashes/sha256'
+import { bytesToHex } from '@noble/hashes/utils'
 
 export class AuthModule {
   private http: HttpClient
@@ -34,25 +36,27 @@ export class AuthModule {
 
   /**
    * 注册：执行 PoW 防刷验证 -> 计算公钥 -> /register -> /auth/challenge -> /auth/verify 
+   * V1.4.1 方案 A：靓号在注册完成后通过 vanity.bind() 接口绑定，注册时不再传入靓号订单
    */
   public async registerAccount(
     mnemonic: string,
-    nickname: string
+    nickname: string,
   ): Promise<{ aliasId: string }> {
     const ident = deriveIdentity(mnemonic)
     
-    // 1. PoW 防刷
+    // 1. PoW 防刷（同步 SHA-256，避免 async 循环微任务堆积导致 UI 卡死）
     let powNonce = ''
     try {
       const powData = await this.http.post('/api/v1/pow/challenge', {})
       const challenge = powData.challenge_string as string
       const difficulty = (powData.difficulty || 4) as number
       const prefix = '0'.repeat(difficulty)
+      const encoder = new TextEncoder()
       
       for (let i = 0; i < 10_000_000; i++) {
         const candidate = i.toString()
-        const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(challenge + candidate))
-        const hex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('')
+        const hash = sha256(encoder.encode(challenge + candidate))
+        const hex = bytesToHex(hash)
         if (hex.startsWith(prefix)) {
           powNonce = candidate
           break
