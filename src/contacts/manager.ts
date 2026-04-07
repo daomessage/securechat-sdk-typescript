@@ -11,6 +11,7 @@ export interface FriendProfile {
   direction: 'sent' | 'received'
   conversation_id: string
   x25519_public_key: string
+  ed25519_public_key: string
   created_at: string
 }
 
@@ -38,7 +39,7 @@ export class ContactsModule {
               const fullIdent = deriveIdentity(ident.mnemonic)
               await establishSession(
                 f.conversation_id,
-                { aliasId: f.alias_id, nickname: f.nickname, x25519PublicKey: f.x25519_public_key },
+                { aliasId: f.alias_id, nickname: f.nickname, x25519PublicKey: f.x25519_public_key, ed25519PublicKey: f.ed25519_public_key },
                 fullIdent.ecdhKey.privateKey,
                 fullIdent.ecdhKey.publicKey
               )
@@ -71,7 +72,7 @@ export class ContactsModule {
   /**
    * 按 Alias ID 查找用户
    */
-  public async lookupUser(aliasId: string): Promise<{ alias_id: string; nickname: string; x25519_public_key: string }> {
+  public async lookupUser(aliasId: string): Promise<{ alias_id: string; nickname: string; x25519_public_key: string; ed25519_public_key: string }> {
     return this.http.get(`/api/v1/users/${encodeURIComponent(aliasId)}`)
   }
 }

@@ -14,6 +14,7 @@ export {
   newMnemonic,
   validateMnemonicWords,
   computeSecurityCode,
+  deriveIdentity,       // App 层初始化 CallModule 时需要派生签名密钥对
   toBase64,
   fromBase64,
   toHex,

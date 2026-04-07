@@ -24,6 +24,7 @@ export interface SessionRecord {
   conversationId: string
   theirAliasId: string
   theirEcdhPublicKey: string           // Base64，用于验证指纹
+  theirEd25519PublicKey?: string       // Base64，用于验证签名 (Identity Key)
   sessionKeyBase64: string             // AES-256 会话密钥 Base64
   trustState: 'unverified' | 'verified'
   createdAt: number
@@ -89,6 +90,8 @@ export async function loadIdentity(): Promise<StoredIdentity | undefined> {
 export async function clearIdentity(): Promise<void> {
   const db = await getDB()
   await db.clear('identity')
+  await db.clear('sessions')
+  await db.clear('offlineInbox')
 }
 
 // ─── 会话密钥存取 ─────────────────────────────────────────────
@@ -101,6 +104,11 @@ export async function saveSession(record: SessionRecord): Promise<void> {
 export async function loadSession(conversationId: string): Promise<SessionRecord | undefined> {
   const db = await getDB()
   return db.get('sessions', conversationId)
+}
+
+export async function loadSessionByAlias(aliasId: string): Promise<SessionRecord | undefined> {
+  const db = await getDB()
+  return db.getFromIndex('sessions', 'byAlias', aliasId)
 }
 
 export async function listSessions(): Promise<SessionRecord[]> {

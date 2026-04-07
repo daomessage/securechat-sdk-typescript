@@ -29,6 +29,7 @@ export interface FriendProfile {
   aliasId: string
   nickname: string
   x25519PublicKey: string  // Base64
+  ed25519PublicKey: string // Base64 (Identity Key for Signatures)
 }
 
 export interface EstablishedSession {
@@ -113,6 +114,7 @@ async function buildSession(
     conversationId: convId,
     theirAliasId: friend.aliasId,
     theirEcdhPublicKey: friend.x25519PublicKey,
+    theirEd25519PublicKey: friend.ed25519PublicKey, // 新增：保存身份公钥
     sessionKeyBase64: toBase64(sessionKey),
     trustState: 'unverified',
     createdAt: Date.now(),
@@ -128,6 +130,14 @@ export async function getSessionKey(conversationId: string): Promise<Uint8Array>
   const session = await loadSession(conversationId)
   if (!session) throw new Error(`no session for ${conversationId}`)
   return fromBase64(session.sessionKeyBase64)
+}
+
+// ─── 获取对方的 Ed25519 公钥 ─────────────────────────────────
+
+export async function getFriendEd25519PubKey(conversationId: string): Promise<Uint8Array | null> {
+  const session = await loadSession(conversationId)
+  if (!session || !session.theirEd25519PublicKey) return null
+  return fromBase64(session.theirEd25519PublicKey)
 }
 
 // ─── 安全码核对通过后标记 verified ────────────────────────────
@@ -152,6 +162,7 @@ export async function listFriends(
     aliasId: f.alias_id,
     nickname: f.nickname,
     x25519PublicKey: f.x25519_public_key,
+    ed25519PublicKey: f.ed25519_public_key,
     status: f.status,
     direction: f.direction || 'sent',
     conversationId: f.conversation_id,

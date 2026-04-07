@@ -151,8 +151,9 @@ export async function clearConversationMessages(conversationId: string): Promise
 
 export async function clearAllMessages(): Promise<void> {
   const db = await getDB()
-  const tx = db.transaction('messages', 'readwrite')
-  await tx.store.clear()
+  const tx = db.transaction(['messages', 'outbox'], 'readwrite')
+  await tx.objectStore('messages').clear()
+  await tx.objectStore('outbox').clear()
   await tx.done
 }
 

@@ -24,35 +24,12 @@ export class MediaModule {
   }
 
   /**
-   * 极简外壳：自动压缩、自动获取签名URL并上传
+   * 极简外壳：自动压缩、调用端侧加密、并获得安全返回
    * 成功即返回拼接好的快捷消息内容： "[img]media_key"
    */
-  public async uploadImage(file: File, maxDim: number = 1920, quality: number = 0.85): Promise<string> {
-    const compressed = await this.compressImage(file, maxDim, quality)
-    
-    // 假设客户端不在此处自行 AES GCM 加密。而是服务端盲传 R2。
-    // 如果 SDK 协议要求 AES GCM，则在此之上还可以包一层，当前遵循直接传（只靠 E2EE 会话密钥加密消息体本身，不加密附件本身）
-    
-    // 1. 申请 url
-    const uploadRes = await this.http.post<UploadURLResponse>('/api/v1/media/upload-url', {
-      content_type: file.type, // 或者 'image/jpeg' 如果上面写死了
-      file_size: compressed.size
-    })
-
-    // 2. 直传 R2
-    const resp = await this.http.fetch(uploadRes.upload_url, {
-      method: 'PUT',
-      body: compressed,
-      headers: {
-        'Content-Type': file.type || 'image/jpeg',
-      },
-    })
-
-    if (!resp.ok) {
-      throw new Error(`Upload failed: ${resp.status} ${resp.statusText}`)
-    }
-
-    return `[img]${uploadRes.media_key}`
+  public async uploadImage(conversationId: string, file: File, maxDim: number = 1920, quality: number = 0.85): Promise<string> {
+    // 强制执行 Chunked AES-256-GCM 强加密代传
+    return this.uploadEncryptedFile(file, conversationId, maxDim, quality)
   }
 
   /**
@@ -260,9 +237,9 @@ export class MediaModule {
   }
 
   /**
-   * 下载加密的媒体文件
+   * 下载加密的媒体文件 (裸流，仅供内部解密使用)
    */
-  public async downloadMedia(mediaKey: string): Promise<ArrayBuffer> {
+  private async downloadMedia(mediaKey: string): Promise<ArrayBuffer> {
     const token = this.http.getToken()
     const headers: Record<string, string> = {}
     if (token) {

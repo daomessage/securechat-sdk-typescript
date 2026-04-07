@@ -9,6 +9,7 @@ import { MediaModule } from './media/manager'
 import { PushModule } from './push/manager'
 import { ChannelsModule } from './channels/manager'
 import { VanityModule, type PaymentConfirmedEvent } from './vanity/manager'
+import { CallModule } from './calls'
 
 // 增加 typing 和 goaway 事件
 type ClientEvent = 'message' | 'status_change' | 'network_state' | 'channel_post' | 'typing' | 'goaway'
@@ -27,8 +28,8 @@ export class SecureChatClient {
   public readonly media: MediaModule
   public readonly push: PushModule
   public readonly channels: ChannelsModule
-  /** 靑号搜索、购买、支付回调 — T-095 */
   public readonly vanity: VanityModule
+  public calls: CallModule | null = null
   public http: HttpClient
 
   private eventListeners = {
@@ -120,6 +121,10 @@ export class SecureChatClient {
    */
   public disconnect(): void {
     this.transport.disconnect()
+    if (this.calls) {
+      this.calls.hangup()
+      this.calls = null
+    }
   }
 
   /**
@@ -127,6 +132,27 @@ export class SecureChatClient {
    */
   public get isConnected(): boolean {
     return this.transport.isConnected
+  }
+
+  /**
+   * 初始化通话模块（需要提供从 DB 提取的用户身份密钥）
+   */
+  public initCalls(opts: { signingPrivKey: Uint8Array; signingPubKey: Uint8Array; myAliasId: string }): void {
+    if (this.calls) return
+    this.calls = new CallModule(
+      this.transport,
+      async () => {
+        // 请求中继服务器获取 TURN 凭据（与后端 GET /api/v1/calls/ice-config 对齐）
+        // http.get() 直接返回解析后的 JSON，无 .data 包装层
+        const resp = await this.http.get('/api/v1/calls/ice-config')
+        const cfg: RTCConfiguration = { iceServers: resp.ice_servers ?? [] }
+        if (resp.ice_transport_policy) {
+          cfg.iceTransportPolicy = resp.ice_transport_policy as RTCIceTransportPolicy
+        }
+        return cfg
+      },
+      opts
+    )
   }
 
   /**
