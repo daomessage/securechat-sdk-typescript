@@ -3,8 +3,8 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.1.0",
-  "description": "SecureChat TypeScript SDK - E2EE messaging SDK",
+  "version": "0.1.1",
+  "description": "SecureChat End-to-End Encrypted Messaging SDK",
   "author": "Daomessage Team",
   "license": "MIT",
   "repository": {
