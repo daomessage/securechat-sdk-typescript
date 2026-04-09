@@ -1,16 +1,41 @@
 {
-  "name": "@chat/sdk",
+  "name": "@daomessage_sdk/sdk",
+  "publishConfig": {
+    "access": "public"
+  },
   "version": "0.1.0",
   "description": "SecureChat TypeScript SDK - E2EE messaging SDK",
+  "author": "Daomessage Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/daomessage/securechat-sdk-typescript.git"
+  },
+  "homepage": "https://github.com/daomessage/securechat-sdk-typescript#readme",
+  "bugs": {
+    "url": "https://github.com/daomessage/securechat-sdk-typescript/issues"
+  },
+  "keywords": [
+    "daomessage",
+    "securechat",
+    "e2ee",
+    "end-to-end encryption",
+    "messaging",
+    "websocket",
+    "sdk"
+  ],
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.cjs"
     }
   },
   "scripts": {

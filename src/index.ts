@@ -1,7 +1,7 @@
 /**
  * sdk-typescript/src/index.ts — T-103 SDK 统一导出
  *
- * 对外暴露所有公开 API，开发者通过 import { ... } from '@chat/sdk' 使用
+ * 对外暴露所有公开 API，开发者通过 import { ... } from '@daomessage_sdk/sdk' 使用
  *
  * ⚠️ 设计守则：
  *   - 底层函数（sendFriendRequest / acceptFriendAndEstablishSession / getSessionKey 等）
