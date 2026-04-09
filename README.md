@@ -117,5 +117,52 @@ await client.sendFile(conversationId, targetAliasId, file);
 | HKDF Salt | `SHA-256(conv_id)` |
 | HKDF Info | `"securechat-session-v1"` |
 
+## 📡 WebSocket Wire Protocol
+
+To demonstrate the transparency of the zero-trust architecture, the following specifies all plaintext control frames transmitted between the client and relay nodes. All message payloads remain securely blind-encrypted and impenetrable to interception.
+
+### Upbound Control Frames (Client -> Server)
+```json
+// 1. Sync Request (Fetch offline/missed messages)
+{ "type": "sync", "crypto_v": 1 }
+
+// 2. Receipt Propagation (Delivered / Read)
+{ "type": "delivered", "conv_id": "...", "seq": 102, "to": "alice_alias", "crypto_v": 1 }
+{ "type": "read", "conv_id": "...", "seq": 102, "to": "alice_alias", "crypto_v": 1 }
+
+// 3. Typing Indicator
+{ "type": "typing", "conv_id": "...", "to": "alice_alias", "crypto_v": 1 }
+
+// 4. Retract Message
+{ "type": "retract", "id": "msg_uu1d", "conv_id": "...", "to": "alice_alias", "crypto_v": 1 }
+
+// 5. Encrypted Upbound Envelope (Relay only observes routing metadata and encrypted payload bytes)
+// Generated dynamically by SDK's internal encryptMessage pipeline
+{ "id": "local-x", "to": "alice", "conv_id": "...", "payload": "U2FsdGVk...", "nonce": "...", "crypto_v": 1 }
+```
+
+### Downbound Control Frames (Server -> Client)
+```json
+// 1. Incoming Encrypted Message Delivery
+{ "type": "msg", "id": "msg_uuid", "from": "bob", "conv_id": "...", "seq": 103, "at": 171000000, "payload": "U2F...", "nonce": "..." }
+
+// 2. Server Processing ACK
+{ "type": "ack", "id": "local-x", "seq": 103 }
+
+// 3. Peer Receipt Sync
+{ "type": "delivered", "conv_id": "...", "seq": 101, "to": "bob" }
+{ "type": "read", "conv_id": "...", "seq": 101, "to": "bob" }
+
+// 4. Peer Typing Status
+{ "type": "typing", "from": "bob", "conv_id": "..." }
+
+// 5. Peer Message Retraction
+{ "type": "retract", "id": "msg_uuid", "from": "bob", "conv_id": "..." }
+
+// 6. External Business Events
+{ "type": "channel_post", "id": "post_uuid", "author_alias_id": "...", "content": "..." }
+{ "type": "payment_confirmed", "order_id": "xxx", "ref_id": "xxx" }
+```
+
 ---
 *2024 © Daomessage Team.*
