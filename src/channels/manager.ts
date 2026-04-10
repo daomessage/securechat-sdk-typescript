@@ -2,7 +2,6 @@ import { HttpClient } from '../http'
 
 export interface ChannelInfo {
   id: string
-  alias_id?: string
   name: string
   description: string
   role?: string
@@ -142,6 +141,18 @@ export class ChannelsModule {
    */
   public async buyChannel(channelId: string): Promise<ChannelTradeOrder> {
     return this.http.post<ChannelTradeOrder>(`/api/v1/channels/${channelId}/buy`, {})
+  }
+
+  /**
+   * 购买额外频道创建配额（每次购买增加 1 个席位，固定 5 USDT）
+   * 
+   * @throws 401 — 需要登录
+   * @example
+   * const order = await client.channels.buyQuota()
+   * showQRCode(order.pay_to, order.price_usdt)
+   */
+  public async buyQuota(): Promise<ChannelTradeOrder> {
+    return this.http.post<ChannelTradeOrder>('/api/v1/channels/quota/buy', {})
   }
 }
 

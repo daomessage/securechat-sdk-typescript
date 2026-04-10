@@ -95,6 +95,153 @@ await client.sendImage(conversationId, targetAliasId, imageFile, base64Thumbnail
 
 // Upload and send any secure file securely
 await client.sendFile(conversationId, targetAliasId, file);
+
+// Record and send a voice message
+await client.sendVoice(conversationId, targetAliasId, audioBlob, durationMs);
+```
+
+### 6. Contacts Management
+
+```typescript
+// Sync friend list and establish ECDH session keys
+const friends = await client.contacts.syncFriends();
+// Returns: FriendProfile[] { alias_id, nickname, conversation_id, status, unread_count }
+
+// Look up a user by alias ID (before adding)
+const user = await client.contacts.lookupUser('alice123');
+
+// Send a friend request
+await client.contacts.sendFriendRequest('alice123');
+
+// Accept a pending friend request
+await client.contacts.acceptFriendRequest(friendshipId);
+```
+
+### 7. Channels (Public Broadcast)
+
+Channels are public, one-way broadcast feeds. Only the channel owner can post; subscribers receive real-time updates via WebSocket.
+
+```typescript
+// Create a new channel
+const { channel_id } = await client.channels.create('My Channel', 'Description', true);
+
+// Search public channels
+const results = await client.channels.search('crypto');
+
+// Get channels I've subscribed to
+const myChannels = await client.channels.getMine();
+
+// Get channel details
+const info = await client.channels.getDetail(channelId);
+
+// Subscribe / Unsubscribe
+await client.channels.subscribe(channelId);
+await client.channels.unsubscribe(channelId);
+
+// Post a message (owner only)
+if (client.channels.canPost(info)) {
+  await client.channels.postMessage(channelId, 'Hello subscribers!', 'text');
+}
+
+// Fetch post history
+const posts = await client.channels.getPosts(channelId);
+```
+
+#### Channel Trading (List for Sale / Buy)
+
+Channel owners can list their channels for sale. Buyers pay via USDT on-chain; ownership transfers automatically after payment confirmation.
+
+```typescript
+// Owner: list channel for sale at 200 USDT
+await client.channels.listForSale(channelId, 200);
+
+// Buyer: purchase a channel (creates a payment order)
+const order = await client.channels.buyChannel(channelId);
+// Returns: ChannelTradeOrder { order_id, price_usdt, pay_to, expired_at }
+// Show QR code for order.pay_to with order.price_usdt amount
+```
+
+### 8. Vanity ID Store
+
+Purchase premium 8-digit alias IDs. Pricing is driven by a real-time rule engine (top/premium/standard tiers).
+
+```typescript
+// Search available vanity IDs
+const items = await client.vanity.search('8888');
+// Returns: VanityItem[] { alias_id, price_usdt, tier, is_featured }
+
+// Reserve + create payment order (pre-registration, no JWT required)
+const order = await client.vanity.reserve('88881234');
+// Returns: ReserveOrder { order_id, alias_id, price, pay_to, expired_at }
+
+// Purchase (post-registration, JWT required)
+const order = await client.vanity.purchase('88881234');
+// Returns: PurchaseOrder { order_id, alias_id, price_usdt, payment_url, expired_at }
+
+// Poll order status
+const status = await client.vanity.orderStatus(orderId);
+// Returns: OrderStatus { status: 'PENDING' | 'COMPLETED' | 'EXPIRED' }
+
+// Bind vanity ID to account after payment confirmed
+const result = await client.vanity.bind(orderId);
+
+// Listen for payment confirmation via WebSocket
+const unsub = client.vanity.onPaymentConfirmed((event) => {
+  console.log('Payment confirmed:', event.order_id, event.ref_id);
+});
+```
+
+### 9. Push Notifications (Web Push)
+
+```typescript
+// Enable push notifications (requires active Service Worker)
+const swReg = await navigator.serviceWorker.ready;
+await client.push.enablePushNotifications(swReg, vapidPublicKey);
+```
+
+### 10. Advanced Messaging
+
+```typescript
+// Retract (unsend) a message
+await client.retractMessage(messageId, toAliasId, conversationId);
+
+// Get local message history from IndexedDB
+const messages = await client.getHistory(conversationId, { limit: 50 });
+
+// Get a single message by ID
+const msg = await client.getMessageData(messageId);
+
+// Clear conversation history locally
+await client.clearHistory(conversationId);
+
+// Clear all local data
+await client.clearAllHistory();
+
+// Export conversation as NDJSON
+const ndjson = await client.exportConversation(conversationId);
+// or export all: await client.exportConversation('all');
+
+// Send typing indicator
+client.sendTyping(conversationId, toAliasId);
+
+// Mark messages as read
+client.markAsRead(conversationId, maxSeq, toAliasId);
+```
+
+### 11. Event System
+
+```typescript
+// Available events
+client.on('message',      (msg)   => { /* Incoming decrypted message */ });
+client.on('status_change', (status) => { /* delivered / read receipt */ });
+client.on('network_state', (state)  => { /* connecting / connected / disconnected */ });
+client.on('channel_post',  (data)   => { /* New channel post broadcast */ });
+client.on('typing',        (data)   => { /* Peer typing indicator */ });
+client.on('goaway',        (reason) => { /* Server forced disconnect (e.g. new device login) */ });
+
+// Unsubscribe
+const unsub = client.on('message', handler);
+unsub(); // Remove listener
 ```
 
 ## 🔐 Architecture & Core Modules
@@ -163,6 +310,80 @@ To demonstrate the transparency of the zero-trust architecture, the following sp
 { "type": "channel_post", "id": "post_uuid", "author_alias_id": "...", "content": "..." }
 { "type": "payment_confirmed", "order_id": "xxx", "ref_id": "xxx" }
 ```
+
+## 🛡️ Security & Resilience
+
+### End-to-End Encryption
+
+| Layer | Algorithm | Purpose |
+|-------|-----------|---------|
+| Identity | Ed25519 | Challenge-Response authentication, message signing |
+| Key Exchange | X25519 ECDH | Per-conversation session key derivation |
+| Message Encryption | AES-256-GCM | All message payloads blind-encrypted client-side |
+| Key Derivation | HKDF-SHA256 | Session key from shared secret + conversation ID |
+| Media Encryption | AES-256-GCM | Files encrypted locally before upload to relay |
+
+The relay server **never** sees plaintext. It only forwards opaque encrypted envelopes.
+
+### Anti-Sybil: Proof of Work (PoW)
+
+Registration requires solving a CPU-bound SHA-256 puzzle before the server accepts the account. This prevents mass bot registration without rate-limiting legitimate users.
+
+```typescript
+// SDK internally performs PoW during registerAccount()
+// Difficulty: find nonce where SHA-256(challenge + nonce) starts with N zero bits
+// Typically takes 1-3 seconds on modern hardware
+```
+
+### Challenge-Response Authentication
+
+Login uses Ed25519 digital signatures instead of passwords:
+1. Client requests a random challenge from the server
+2. Client signs the challenge with their Ed25519 private key
+3. Server verifies the signature against the stored public key
+4. Server issues a JWT token on success
+
+No passwords are ever transmitted or stored.
+
+### WebSocket Resilience
+
+The SDK automatically handles network interruptions with zero manual intervention:
+
+| Mechanism | Implementation |
+|-----------|---------------|
+| **Heartbeat** | `ping` frame every 25s to detect dead connections |
+| **Auto-Reconnect** | Exponential backoff: `min(1s × 2^n, 30s)` with random jitter |
+| **Browser Lifecycle** | Auto-reconnects on `online` event and `visibilitychange` (tab refocus) |
+| **GOAWAY Handling** | Server sends `goaway` frame on new device login → SDK stops reconnecting and emits `goaway` event for App to show "logged in elsewhere" UI |
+| **Graceful Disconnect** | `client.disconnect()` sets intentional flag → no reconnect attempts |
+
+### Server-Side Protections (Relay)
+
+These protections are enforced by the relay server and documented here for SDK developers to understand error responses:
+
+| Protection | Detail | SDK Impact |
+|------------|--------|------------|
+| **Registration Rate Limit** | 10 registrations/IP/hour | `registerAccount()` may return 429 |
+| **Message Rate Limit** | 120 messages/user/minute | `sendMessage()` may return 429 |
+| **Typing Rate Limit** | 30 typing events/user/minute (separate channel) | Excess silently dropped |
+| **Upload Rate Limit** | 10 uploads/user/minute | `sendImage()`/`sendFile()` may return 429 |
+| **Message Dedup** | Server-side `SETNX dedup:{msg_uuid}` (300s TTL) | Prevents duplicate bubbles on weak network retries |
+| **JWT Revocation** | `revoked_jwt:{jti}` in Redis blacklist on new device login | Stale tokens rejected with 401 |
+| **Message TTL** | All messages purged from relay after 24 hours | SDK persists locally in IndexedDB |
+| **Media TTL** | All uploaded media purged from S3 after 24 hours | Client-side backup responsibility |
+
+### Cryptographic Key Hierarchy
+
+```
+BIP-39 Mnemonic (12 words)
+  └─ SLIP-0010 Hardened Derivation
+       ├─ m/44'/0'/0'/0/0 → Ed25519 Signing Key (identity, never changes)
+       └─ m/44'/1'/0'/0/0 → X25519 ECDH Key (encryption, can rotate)
+                              └─ HKDF(shared_secret, conv_id)
+                                   └─ Per-conversation AES-256-GCM session key
+```
+
+Users only need to back up their 12-word mnemonic. All keys are deterministically derived.
 
 ---
 *2024 © Daomessage Team.*

@@ -16,12 +16,14 @@ import { HttpClient } from '../http'
 
 // ─── 数据类型 ──────────────────────────────────────────────────
 
-/** 靓号列表项（来自 GET /api/v1/vanity/search）*/
+/** 靓号列表项（来自 GET /api/v1/vanity/search）
+ *  V1.3 规则引擎版：价格由后端 rules.go 实时评估，不再依赖预填表 */
 export interface VanityItem {
   alias_id: string
   price_usdt: number
+  /** 靓号等级：'top' | 'premium' | 'standard' */
+  tier: string
   is_featured: boolean
-  updated_at: string
 }
 
 /** 购买靓号返回的支付订单（来自 POST /api/v1/vanity/purchase，需 JWT）*/
