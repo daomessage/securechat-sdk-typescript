@@ -137,14 +137,16 @@ export class SecureChatClient {
   /**
    * 初始化通话模块（需要提供从 DB 提取的用户身份密钥）
    */
-  public initCalls(opts: { signingPrivKey: Uint8Array; signingPubKey: Uint8Array; myAliasId: string }): void {
+  public initCalls(opts: { signingPrivKey: Uint8Array; signingPubKey: Uint8Array; myAliasId: string; alwaysRelay?: boolean }): void {
     if (this.calls) return
+    const alwaysRelay = opts.alwaysRelay ?? false
     this.calls = new CallModule(
       this.transport,
       async () => {
         // 请求中继服务器获取 TURN 凭据（与后端 GET /api/v1/calls/ice-config 对齐）
-        // http.get() 直接返回解析后的 JSON，无 .data 包装层
-        const resp = await this.http.get('/api/v1/calls/ice-config')
+        // 付费用户开启 alwaysRelay 时，附加 ?mode=relay 强制走 TURN
+        const mode = alwaysRelay ? '?mode=relay' : ''
+        const resp = await this.http.get(`/api/v1/calls/ice-config${mode}`)
         const cfg: RTCConfiguration = { iceServers: resp.ice_servers ?? [] }
         if (resp.ice_transport_policy) {
           cfg.iceTransportPolicy = resp.ice_transport_policy as RTCIceTransportPolicy

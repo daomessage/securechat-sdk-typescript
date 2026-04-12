@@ -29,6 +29,7 @@ export {
   clearIdentity,        // 退出账号时调用
   loadSession,          // ChatWindow 读安全码等信息
   listSessions,         // MessagesTab 展示会话列表
+  deleteSession,        // MessagesTab 清除单个会话
   markSessionVerified,  // 手动标记安全码已验证（配合 SecurityModule 使用）
   type SessionRecord,
   type StoredIdentity,

@@ -10,8 +10,11 @@
  *                                  ← TURN 中继 ← RTP
  */
 
-// signSignal/verifySignal 暂不做 E2EE 签名验证（信令层已由 relay 做 from 注入防伪造）
+// signSignal/verifySignal 暂不做 Ed25519 签名验证（V2 待做）
 import type { MessageEnvelope } from '../crypto/index'
+import { encrypt, decrypt } from '../crypto/index'
+import { loadSessionByAlias } from '../keys/store'
+import { fromBase64 } from '../keys/index'
 
 // ─── 状态类型 ─────────────────────────────────────────────────
 
@@ -194,10 +197,26 @@ export class CallModule {
     const type = env['type'] as string
     if (!type?.startsWith('call_')) return
 
-    console.log('[CallModule] 收到 WebRTC 信令:', type, env)
-
     // 后端会注入 from 字段（防伪造），优先使用
     const from = env['from'] as string
+
+    // 半加密解密：如果有 payload 字段，尝试解密并合并到 env 中
+    if (env['payload'] && typeof env['payload'] === 'string') {
+      const sessionKey = await this.getSessionKey(from)
+      if (sessionKey) {
+        try {
+          const decrypted = await decrypt(env['payload'] as string, sessionKey)
+          const decoded = JSON.parse(decrypted)
+          Object.assign(env, decoded)
+        } catch (e) {
+          console.error('[CallModule] 信令 payload 解密失败:', e)
+          return
+        }
+      } else {
+        console.warn('[CallModule] 无法解密信令：找不到与', from, '的会话密钥')
+        return
+      }
+    }
 
     switch (type) {
       case 'call_offer':
@@ -311,23 +330,35 @@ export class CallModule {
     return pc
   }
 
-  // ── 信令发送（扁平格式，与 Android 统一）───────────────────────
+  // ── 信令发送（半加密：路由字段明文，SDP/Candidate 加密）───────
 
-  private sendSignal(toAlias: string, type: string, payload: Record<string, unknown>): void {
+  private async sendSignal(toAlias: string, type: string, payload: Record<string, unknown>): Promise<void> {
     // payload 里可能有 type 字段（RTCSdpType: 'offer'/'answer'），
     // 提取后改名为 sdp_type 避免与外层 type 冲突
     const { type: sdpType, ...rest } = payload
+    const sensitiveData: Record<string, unknown> = { ...rest }
+    if (sdpType !== undefined) sensitiveData['sdp_type'] = sdpType
+
+    // 尝试获取会话密钥进行加密
+    const sessionKey = await this.getSessionKey(toAlias)
+
     const env: Record<string, unknown> = {
       type,
       to:       toAlias,
       call_id:  this.callId,
       from:     this.myAliasId,
       crypto_v: 1,
-      ...rest,           // sdp, candidate 等字段
     }
-    if (sdpType !== undefined) env['sdp_type'] = sdpType
+
+    if (sessionKey) {
+      // 半加密：敏感字段加密到 payload
+      const plaintext = JSON.stringify(sensitiveData)
+      env['payload'] = await encrypt(plaintext, sessionKey)
+    } else {
+      // 回退明文（无会话密钥时保持兼容）
+      Object.assign(env, sensitiveData)
+    }
     
-    console.log('[CallModule] 发送 WebRTC 信令:', type, env)
     this.transport.send(JSON.stringify(env))
   }
 
@@ -346,14 +377,10 @@ export class CallModule {
     this.setState(finalState)
   }
 
-  // 从 IndexedDB 中加载对方的 Ed25519 公钥（强制验签防止 MITM）
+  // 从 IndexedDB 中加载对端的 Ed25519 公钥（强制验签防止 MITM）
   private _pubKeyCache = new Map<string, Uint8Array>()
   private async fetchPubKey(aliasId: string): Promise<Uint8Array | null> {
     if (this._pubKeyCache.has(aliasId)) return this._pubKeyCache.get(aliasId)!
-    
-    // 动态引入（避免循环依赖或直接在顶部加）
-    const { loadSessionByAlias } = await import('../keys/store')
-    const { fromBase64 } = await import('../keys/index')
     
     const session = await loadSessionByAlias(aliasId)
     if (session && session.theirEd25519PublicKey) {
@@ -362,7 +389,23 @@ export class CallModule {
       return pubKey
     }
     
-    console.warn(`[CallModule] 无法获取 ${aliasId} 的身份公钥，强制拒接`)
+    console.warn(`[CallModule] 无法获取 ${aliasId} 的身份公钥`)
+    return null
+  }
+
+  // 从 IndexedDB 获取与对端的会话密钥（用于信令半加密）
+  private _sessionKeyCache = new Map<string, Uint8Array>()
+  private async getSessionKey(aliasId: string): Promise<Uint8Array | null> {
+    if (this._sessionKeyCache.has(aliasId)) return this._sessionKeyCache.get(aliasId)!
+    
+    const session = await loadSessionByAlias(aliasId)
+    if (session && session.sessionKeyBase64) {
+      const key = fromBase64(session.sessionKeyBase64)
+      this._sessionKeyCache.set(aliasId, key)
+      return key
+    }
+    
+    console.warn(`[CallModule] 无法获取与 ${aliasId} 的会话密钥，信令将明文发送`)
     return null
   }
 }
