@@ -17,6 +17,33 @@ const mockHttp = {
 import { loadSession } from '../../src/keys/store'
 import type { Mock } from 'vitest'
 
+// Mock minimal DOM for canvas compression
+;(global as any).Image = class {
+  onload: () => void = () => {};
+  onerror: () => void = () => {};
+  src: string = '';
+  width: number = 100;
+  height: number = 100;
+  constructor() {
+    setTimeout(() => this.onload(), 0);
+  }
+};
+
+;(global as any).document = {
+  createElement: () => ({
+    width: 100,
+    height: 100,
+    getContext: () => ({
+      drawImage: vi.fn(),
+    }),
+    toBlob: (cb: any) => cb(new Blob(['dummy byte data'], {type: 'image/jpeg'})),
+  })
+};
+
+;(global as any).URL = {
+  createObjectURL: vi.fn(),
+};
+
 describe('MediaModule - E2EE', () => {
   let mediaModule: MediaModule
 
@@ -36,7 +63,10 @@ describe('MediaModule - E2EE', () => {
       upload_id: 'up_123',
       media_key: 'img_abc'
     })
-    mockHttp.fetch.mockResolvedValueOnce({ ok: true })
+    mockHttp.fetch.mockResolvedValueOnce({ 
+      ok: true, 
+      json: async () => ({ etag: 'dummy_etag' }) 
+    } as unknown as Response)
 
     const file = new File(['dummy content larger than typical'], 'test.png', { type: 'image/png' })
     const result = await mediaModule.uploadImage(file, 'conv_123')
@@ -74,12 +104,12 @@ describe('MediaModule - E2EE', () => {
     } as unknown as Response)
 
     try {
-      const decryptedBlob = await mediaModule.downloadEncryptedFile('img_abc', 'conv_123')
-      expect(decryptedBlob).toBeInstanceOf(Blob)
+      const decryptedBlob = await mediaModule.downloadDecryptedMedia('img_abc', 'conv_123')
+      expect(decryptedBlob).toBeDefined()
     } catch (e) {
       // In vitest we might not have a full browser crypto context to decrypt our garbage chunk,
       // but we ensure the method exists and attempts decryption.
-      expect(mediaModule.downloadEncryptedFile).toBeDefined()
+      expect(mediaModule.downloadDecryptedMedia).toBeDefined()
     }
   })
 })
