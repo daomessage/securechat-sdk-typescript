@@ -99,9 +99,10 @@ export class SecureChatClient {
   }
 
   /**
-   * 建立连接：自动从 AuthModule 与 HTTP 获取底层验证标识，封装并连接 WSS
+   * 建立连接：先获取一次性 ticket（30s 有效），再用 ticket 建连 WS
+   * P2-FIX-#11：JWT 不再出现在 WS URL 中，避免日志泄露
    */
-  public connect(): void {
+  public async connect(): Promise<void> {
     const uuid = this.auth.internalUUID
     const token = this.http.getToken()
     
@@ -109,11 +110,23 @@ export class SecureChatClient {
       throw new Error('未发现本地身份与令牌，请先注册或恢复会话 (registerAccount / restoreSession)')
     }
 
-    let url = this.http.getApiBase()
-    url = url.replace(/^http/, 'ws')
-    const fullUrl = `${url}/ws?user_uuid=${uuid}&token=${token}`
+    let wsUrl = this.http.getApiBase()
+    wsUrl = wsUrl.replace(/^http/, 'ws')
 
-    this.transport.connect(fullUrl)
+    // 优先使用 ticket 机制（服务端 30s TTL 一次性消费）
+    try {
+      const resp = await this.http.post('/api/v1/ws/ticket', {})
+      if (resp && resp.ticket) {
+        this.transport.connect(`${wsUrl}/ws?user_uuid=${uuid}&ticket=${resp.ticket}`)
+        return
+      }
+    } catch (e) {
+      // ticket 接口不可用（旧版服务端），降级到 token 方式
+      console.warn('[SDK] ws/ticket not available, falling back to token in URL:', e)
+    }
+
+    // 降级：旧版服务端兼容
+    this.transport.connect(`${wsUrl}/ws?user_uuid=${uuid}&token=${token}`)
   }
 
   /**
