@@ -149,19 +149,29 @@ export class SecureChatClient {
 
   /**
    * 初始化通话模块（需要提供从 DB 提取的用户身份密钥）
+   *
+   * P3.10 隐私加固（2026-04）：
+   *   `alwaysRelay` 默认为 true。零知识产品默认不泄露任何端 IP，
+   *   即使双方都在同一 NAT 内也强制走 TURN。
+   *   仅当用户**显式**设置 `alwaysRelay: false` 时才允许 P2P
+   *   （用户需自行承担 IP 暴露风险）。
    */
   public initCalls(opts: { signingPrivKey: Uint8Array; signingPubKey: Uint8Array; myAliasId: string; alwaysRelay?: boolean }): void {
     if (this.calls) return
-    const alwaysRelay = opts.alwaysRelay ?? false
+    const alwaysRelay = opts.alwaysRelay ?? true  // 默认强制中继 = 隐私优先
     this.calls = new CallModule(
       this.transport,
       async () => {
         // 请求中继服务器获取 TURN 凭据（与后端 GET /api/v1/calls/ice-config 对齐）
-        // 付费用户开启 alwaysRelay 时，附加 ?mode=relay 强制走 TURN
+        // 附加 ?mode=relay 让服务端只下发 TURN 凭据（不下发 STUN）
         const mode = alwaysRelay ? '?mode=relay' : ''
         const resp = await this.http.get(`/api/v1/calls/ice-config${mode}`)
         const cfg: RTCConfiguration = { iceServers: resp.ice_servers ?? [] }
-        if (resp.ice_transport_policy) {
+        // 客户端侧同步强制 iceTransportPolicy = 'relay'
+        // 即便服务端返回了 STUN 候选，也会被浏览器 ICE 栈丢弃，不会生成 host/srflx candidate
+        if (alwaysRelay) {
+          cfg.iceTransportPolicy = 'relay'
+        } else if (resp.ice_transport_policy) {
           cfg.iceTransportPolicy = resp.ice_transport_policy as RTCIceTransportPolicy
         }
         return cfg

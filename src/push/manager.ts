@@ -50,6 +50,15 @@ export class PushModule {
     }
   }
 
+  /**
+   * 注销当前设备的推送订阅
+   * 对应服务端 POST /api/v1/push/disable — 清空 device_session.push_endpoint
+   * 对标 Android/iOS SDK: client.push.disable() / .disablePush()
+   */
+  public async disablePush(): Promise<void> {
+    await this.http.post('/api/v1/push/disable', {})
+  }
+
   private urlBase64ToUint8Array(base64String: string) {
     const padding = '='.repeat((4 - base64String.length % 4) % 4)
     const base64 = (base64String + padding)

@@ -26,6 +26,16 @@ await client.contacts.acceptFriendRequest(friendshipId);
 
 The `friendshipId` comes from the friend list sync (see below).
 
+## Reject a Friend Request
+
+```typescript
+await client.contacts.rejectFriendRequest(friendshipId);
+```
+
+The recipient rejects a pending request. Per the product design (§11),
+the server does NOT notify the sender — their request remains in
+"pending" state on their side to preserve privacy.
+
 ## Sync Contacts
 
 Fetch all friends and automatically create local encryption sessions:

@@ -70,6 +70,15 @@ export class ContactsModule {
   }
 
   /**
+   * 拒绝好友请求
+   * 服务端将 friendship 状态置为 "rejected"；按产品设计 §11，不通知发起方。
+   */
+  public async rejectFriendRequest(friendshipId: number): Promise<void> {
+    await this.http.post(`/api/v1/friends/${friendshipId}/reject`, {})
+    await this.syncFriends()
+  }
+
+  /**
    * 按 Alias ID 查找用户
    */
   public async lookupUser(aliasId: string): Promise<{ alias_id: string; nickname: string; x25519_public_key: string; ed25519_public_key: string }> {

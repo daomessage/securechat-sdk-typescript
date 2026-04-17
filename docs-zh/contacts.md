@@ -26,6 +26,15 @@ await client.contacts.acceptFriendRequest(friendshipId);
 
 `friendshipId` 来自好友列表同步（见下文）。
 
+## 拒绝好友请求
+
+```typescript
+await client.contacts.rejectFriendRequest(friendshipId);
+```
+
+接收方拒绝待处理的申请。按产品设计 §11：**服务端不通知发起方**
+（发起方侧仍显示为 "pending"，以保护隐私）。
+
 ## 同步联系人
 
 获取所有好友并自动创建本地加密会话：

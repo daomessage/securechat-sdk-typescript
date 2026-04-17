@@ -67,6 +67,21 @@ Push notifications contain **no message content**:
 
 The server only knows "someone has a new message" — not who, from whom, or what.
 
+## Disable Push
+
+Stop receiving notifications for the current device session:
+
+```typescript
+await client.push.disablePush();
+```
+
+Clears the server-side `push_endpoint`. The server will skip this
+device during `SendPushNotification`. Safe to call multiple times.
+
+Use cases:
+- User toggles off "notifications" in settings
+- Before logout, to prevent ghost pushes on a stale token
+
 ## Important Notes
 
 - Push only works on HTTPS (or localhost for development)

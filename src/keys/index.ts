@@ -163,12 +163,39 @@ export function computeSecurityCode(
 
 // ─── 工具函数 ─────────────────────────────────────────────────
 
+/**
+ * toBase64 — 安全 Base64 编码
+ *
+ * 老实现 `btoa(String.fromCharCode(...bytes))` 在大 Uint8Array（>~100KB）上
+ * 会触发 "Maximum call stack size exceeded"（spread 参数过多）。
+ * 新实现分片处理 + 合并，支持任意大小。
+ */
 export function toBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
+  if (bytes.length === 0) return ''
+  const chunkSize = 0x8000 // 32K chars per chunk
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length))
+    binary += String.fromCharCode.apply(null, slice as unknown as number[])
+  }
+  return btoa(binary)
 }
 
+/**
+ * fromBase64 — 严格 Base64 解码
+ *
+ * 校验输入是合法 base64（字符集 + 长度是 4 的倍数）。非法输入会抛出
+ * 而不是静默产生 NaN 字节（老实现对非法字符会 produce Uint8Array with NaN）。
+ */
 export function fromBase64(b64: string): Uint8Array {
-  return Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+  if (b64 === '') return new Uint8Array(0)
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) {
+    throw new Error('fromBase64: invalid base64 input')
+  }
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }
 
 export function toHex(bytes: Uint8Array): string {

@@ -10,11 +10,23 @@
  *                                  ← TURN 中继 ← RTP
  */
 
-// signSignal/verifySignal 暂不做 Ed25519 签名验证（V2 待做）
+// 2026-04 安全加固：所有 call_* 信令必须通过 Ed25519 签名 + 时间戳窗口 + nonce 去重校验
+// 对应 crypto/index.ts 的 signSignal / verifySignal
 import type { MessageEnvelope } from '../crypto/index'
-import { encrypt, decrypt } from '../crypto/index'
+import { encrypt, decrypt, signSignal, verifySignal } from '../crypto/index'
 import { loadSessionByAlias } from '../keys/store'
 import { fromBase64 } from '../keys/index'
+
+/**
+ * redact — 日志脱敏：alias_id / conv_id / jti 仅保留前 4 + 后 2 字符
+ * 示例：redact("u12345678") → "u123…78"
+ * 防止日志/Sentry 误采元数据用于社交图谱分析（M24）
+ */
+function redact(s: string | undefined): string {
+  if (!s) return '(empty)'
+  if (s.length <= 6) return s[0] + '***'
+  return s.slice(0, 4) + '…' + s.slice(-2)
+}
 
 // ─── 状态类型 ─────────────────────────────────────────────────
 
@@ -199,24 +211,56 @@ export class CallModule {
 
     // 后端会注入 from 字段（防伪造），优先使用
     const from = env['from'] as string
-
-    // 半加密解密：如果有 payload 字段，尝试解密并合并到 env 中
-    if (env['payload'] && typeof env['payload'] === 'string') {
-      const sessionKey = await this.getSessionKey(from)
-      if (sessionKey) {
-        try {
-          const decrypted = await decrypt(env['payload'] as string, sessionKey)
-          const decoded = JSON.parse(decrypted)
-          Object.assign(env, decoded)
-        } catch (e) {
-          console.error('[CallModule] 信令 payload 解密失败:', e)
-          return
-        }
-      } else {
-        console.warn('[CallModule] 无法解密信令：找不到与', from, '的会话密钥')
-        return
-      }
+    if (!from) {
+      console.warn('[CallModule] reject: no `from` on signal')
+      return
     }
+
+    // crypto_v=2 后所有 call_* 必须是"密文 payload + 内层签名"，明文 SDP 已禁
+    if (!env['payload'] || typeof env['payload'] !== 'string') {
+      console.warn('[CallModule] reject: missing encrypted payload (crypto_v=2 required)')
+      return
+    }
+
+    const sessionKey = await this.getSessionKey(from)
+    if (!sessionKey) {
+      console.warn('[CallModule] reject: no session key for', redact(from))
+      return
+    }
+
+    // 1) 解密内层
+    let inner: Record<string, unknown>
+    try {
+      const plaintext = await decrypt(env['payload'] as string, sessionKey)
+      inner = JSON.parse(plaintext)
+    } catch (e) {
+      console.error('[CallModule] decrypt failed:', e)
+      return
+    }
+
+    // 2) 验签（Ed25519 + timestamp 窗口 + nonce 去重）
+    const signingPubKey = await this.fetchPubKey(from)
+    if (!signingPubKey) {
+      console.warn('[CallModule] no peer signing key for', redact(from), '— signal rejected')
+      return
+    }
+    if (!verifySignal(inner, signingPubKey)) {
+      console.warn('[CallModule] signal verify FAILED from', redact(from), '— possible MITM / replay')
+      return
+    }
+
+    // 3) 校验内层 from / call_id 一致（防中间篡改）
+    if (inner['from'] !== from) {
+      console.warn('[CallModule] inner.from mismatch; possible envelope tampering')
+      return
+    }
+    if (inner['call_id'] && inner['call_id'] !== env['call_id']) {
+      console.warn('[CallModule] call_id mismatch between envelope and signed inner')
+      return
+    }
+
+    // 合并已验证的内层字段（sdp / candidate 等）到 env 供下游使用
+    Object.assign(env, inner)
 
     switch (type) {
       case 'call_offer':
@@ -339,26 +383,31 @@ export class CallModule {
     const sensitiveData: Record<string, unknown> = { ...rest }
     if (sdpType !== undefined) sensitiveData['sdp_type'] = sdpType
 
-    // 尝试获取会话密钥进行加密
+    // 必须有会话密钥才能签名+加密；否则拒发，避免明文泄漏 SDP/ICE
     const sessionKey = await this.getSessionKey(toAlias)
+    if (!sessionKey) {
+      throw new Error(`[CallModule] no session key for ${toAlias}; cannot send signed signal`)
+    }
 
+    // 1) 敏感字段 + signaling metadata 打包签名
+    const signedInner = signSignal(
+      { ...sensitiveData, type, call_id: this.callId, from: this.myAliasId },
+      this.signingPrivKey
+    )
+    // 2) 加密整个已签名体
+    const plaintext = JSON.stringify(signedInner)
+    const encryptedPayload = await encrypt(plaintext, sessionKey)
+
+    // 3) 外层信封保留路由字段（服务端转发需要），payload 为密文
     const env: Record<string, unknown> = {
       type,
       to:       toAlias,
       call_id:  this.callId,
       from:     this.myAliasId,
-      crypto_v: 1,
+      crypto_v: 2, // v2 = mandatory sign+encrypt
+      payload:  encryptedPayload,
     }
 
-    if (sessionKey) {
-      // 半加密：敏感字段加密到 payload
-      const plaintext = JSON.stringify(sensitiveData)
-      env['payload'] = await encrypt(plaintext, sessionKey)
-    } else {
-      // 回退明文（无会话密钥时保持兼容）
-      Object.assign(env, sensitiveData)
-    }
-    
     this.transport.send(JSON.stringify(env))
   }
 
@@ -413,19 +462,36 @@ export class CallModule {
 // ─── T-073 Insertable Streams E2EE 视频帧加密 ──────────────
 // 使用 WebRTC Insertable Streams (RTCRtpScriptTransform / Encoded Transform)
 // 对每个 RTP 视频帧单独做 AES-GCM 加密，服务端完全看不到媒体内容
+//
+// P3.9 IV 方案（2026-04 加固）：
+//   IV(12B) = baseIV(12B) XOR (counter_le_12B)
+//   counter 从 0 单调递增，由发送端持有状态；接收端直接从帧头读到 counter
+//     再做 XOR 得到 IV（不再相信发送端携带的 IV）。
+//   这样保证同 (key, IV) 永不复用，即便 RTP timestamp 回绕或不同 track 共享 key。
+//   帧头格式：[ counter_le_8B | ciphertext_with_tag ]
+//
+// Rekey 阈值：
+//   一次 E2EE key 最多加密 REKEY_FRAME_THRESHOLD 帧（2^24 = 约 46 分钟 @ 30fps）
+//   或 REKEY_BYTE_THRESHOLD 字节（防止总密文量过大）。达到阈值即在通话层触发
+//   renegotiate offer 重新协商会话密钥。超出上限时本实现会抛错，阻断不安全加密。
 
 const FRAME_IV_LEN = 12
+const COUNTER_PREFIX_LEN = 8  // 帧头携带 8 字节 counter（高 4 字节全 0，足够 2^64）
+const REKEY_FRAME_THRESHOLD = 1 << 24  // 16M 帧 ≈ 155 小时 @ 30fps（远超单次通话）
+const REKEY_BYTE_THRESHOLD = 1 << 34   // 16GiB（AES-GCM 同 key 建议 < 2^39 bytes）
 
 /**
  * setupE2EETransform：为 RTCRtpSender/Receiver 安装帧级加解密 Transform
  * @param kind         'sender' | 'receiver'
  * @param rtpObject    RTCRtpSender 或 RTCRtpReceiver
  * @param keyMaterial  AES-256-GCM 密钥 + BaseIV（44字节：32+12，由 HKDF 从会话密钥派生）
+ * @param onRekeyNeeded 可选回调：当本端加密计数接近阈值时触发，通话层应重新协商密钥
  */
 export async function setupE2EETransform(
   kind: 'sender' | 'receiver',
   rtpObject: RTCRtpSender | RTCRtpReceiver,
-  keyMaterial: Uint8Array
+  keyMaterial: Uint8Array,
+  onRekeyNeeded?: () => void
 ): Promise<void> {
   if (keyMaterial.length < 44) throw new Error('keyMaterial must be at least 44 bytes (32 Key + 12 IV)')
   const frameKey = keyMaterial.slice(0, 32)
@@ -441,9 +507,20 @@ export async function setupE2EETransform(
 
   // Insertable Streams API（Chrome 86+，Firefox 117+）
   if ('RTCRtpScriptTransform' in window) {
-    // Worker-based Transform（后续也需改造 e2ee-worker 处理 baseIV，当前先处理主线程 Fallback）
+    // Worker-based Transform：把 keyMaterial 传给 worker，由 worker 负责 counter + rekey
     const worker = new Worker(new URL('./calls/e2ee-worker.js', import.meta.url))
-    worker.postMessage({ type: 'init', keyMaterial }, [keyMaterial.buffer.slice(0)])
+    worker.postMessage({
+      type: 'init',
+      kind,
+      keyMaterial,
+      rekeyFrameThreshold: REKEY_FRAME_THRESHOLD,
+      rekeyByteThreshold: REKEY_BYTE_THRESHOLD,
+    }, [keyMaterial.buffer.slice(0)])
+    if (onRekeyNeeded) {
+      worker.addEventListener('message', (ev) => {
+        if (ev.data?.type === 'rekey-needed') onRekeyNeeded()
+      })
+    }
     const transform = new (window as unknown as { RTCRtpScriptTransform: typeof RTCRtpScriptTransform }).RTCRtpScriptTransform(worker, { operation: kind })
     if (kind === 'sender') {
       (rtpObject as RTCRtpSender).transform = transform as unknown as RTCRtpTransform
@@ -459,62 +536,119 @@ export async function setupE2EETransform(
     : (rtpObject as unknown as { createEncodedStreams(): { readable: ReadableStream; writable: WritableStream } }).createEncodedStreams()
 
   if (kind === 'sender') {
-    streams.readable.pipeThrough(encryptTransform(cryptoKey, baseIV)).pipeTo(streams.writable)
+    streams.readable.pipeThrough(encryptTransform(cryptoKey, baseIV, onRekeyNeeded)).pipeTo(streams.writable)
   } else {
     streams.readable.pipeThrough(decryptTransform(cryptoKey, baseIV)).pipeTo(streams.writable)
   }
 }
 
-// 提取 Frame 的 timestamp 或 metadata 以派生无状态 IV
-function deriveIV(baseIV: Uint8Array, timestamp: number): Uint8Array {
+/**
+ * counterToIV：counter(u64 LE) XOR baseIV(12B)，得到 12B AES-GCM IV
+ * 前 8 字节带 counter；后 4 字节直接复用 baseIV（counter 空间 2^64 足够）
+ */
+function counterToIV(baseIV: Uint8Array, counter: bigint): Uint8Array {
   const iv = new Uint8Array(FRAME_IV_LEN)
-  for (let i = 0; i < FRAME_IV_LEN; i++) {
-    // 对 timestamp 的各字节进行异或
-    iv[i] = baseIV[i] ^ ((timestamp >> (i * 8)) & 0xff)
+  iv.set(baseIV)
+  // 在前 8 字节上 XOR counter（little-endian）
+  let c = counter
+  for (let i = 0; i < COUNTER_PREFIX_LEN; i++) {
+    iv[i] ^= Number(c & 0xffn)
+    c >>= 8n
   }
   return iv
 }
 
-// TransformStream：加密每个视频帧
-function encryptTransform(key: CryptoKey, baseIV: Uint8Array): TransformStream {
+function writeCounterBE(buf: Uint8Array, offset: number, counter: bigint): void {
+  let c = counter
+  for (let i = COUNTER_PREFIX_LEN - 1; i >= 0; i--) {
+    buf[offset + i] = Number(c & 0xffn)
+    c >>= 8n
+  }
+}
+
+function readCounterBE(buf: Uint8Array, offset: number): bigint {
+  let c = 0n
+  for (let i = 0; i < COUNTER_PREFIX_LEN; i++) {
+    c = (c << 8n) | BigInt(buf[offset + i])
+  }
+  return c
+}
+
+// TransformStream：加密每个视频帧（sender 持有 counter 状态）
+function encryptTransform(key: CryptoKey, baseIV: Uint8Array, onRekeyNeeded?: () => void): TransformStream {
+  let counter = 0n
+  let totalBytes = 0n
+  let rekeyRequested = false
   return new TransformStream({
     async transform(frame: unknown, controller: TransformStreamDefaultController) {
       const f = frame as { data: ArrayBuffer; timestamp?: number }
-      const ts = f.timestamp || 0
-      
-      const sessionIV = deriveIV(baseIV, ts)
-      
+
+      // Rekey 触发（达到阈值 80% 时提前通知通话层，避免超限）
+      if (!rekeyRequested && onRekeyNeeded &&
+          (counter >= BigInt(Math.floor(REKEY_FRAME_THRESHOLD * 0.8))
+           || totalBytes >= BigInt(Math.floor(REKEY_BYTE_THRESHOLD * 0.8)))) {
+        rekeyRequested = true
+        try { onRekeyNeeded() } catch { /* ignore */ }
+      }
+
+      // 硬阈值：超限拒绝继续加密
+      if (counter >= BigInt(REKEY_FRAME_THRESHOLD) || totalBytes >= BigInt(REKEY_BYTE_THRESHOLD)) {
+        // 丢帧（不阻塞流，也不泄露明文）
+        return
+      }
+
+      const iv = counterToIV(baseIV, counter)
+
       const encrypted = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv: sessionIV as unknown as BufferSource },
+        { name: 'AES-GCM', iv: iv as unknown as BufferSource },
         key,
         f.data
       )
-      
-      // 拼接 IV + 密文（即使接收端自己能算，带上 IV 容错率更高，若严苛带宽可忽略）
-      const result = new Uint8Array(FRAME_IV_LEN + encrypted.byteLength)
-      result.set(sessionIV)
-      result.set(new Uint8Array(encrypted), FRAME_IV_LEN)
+
+      // 帧头：[ counter(8B big-endian) | ciphertext+tag ]
+      const result = new Uint8Array(COUNTER_PREFIX_LEN + encrypted.byteLength)
+      writeCounterBE(result, 0, counter)
+      result.set(new Uint8Array(encrypted), COUNTER_PREFIX_LEN)
       f.data = result.buffer
+
+      counter++
+      totalBytes += BigInt(encrypted.byteLength)
       controller.enqueue(frame)
     },
   })
 }
 
-// TransformStream：解密每个视频帧
+// TransformStream：解密每个视频帧（接收端从帧头读 counter，不信任发送端携带的 IV）
 function decryptTransform(key: CryptoKey, baseIV: Uint8Array): TransformStream {
+  // 接收端维护最近的 counter 窗口，防重放
+  const recent = new Set<string>()
+  const recentOrder: string[] = []
+  const RECENT_WINDOW = 2048
+
   return new TransformStream({
     async transform(frame: unknown, controller: TransformStreamDefaultController) {
       const f = frame as { data: ArrayBuffer; timestamp?: number }
       const buf = new Uint8Array(f.data)
-      
-      if (buf.length < FRAME_IV_LEN + 16) {
-         controller.enqueue(frame) // 太短直接发走或弃用
-         return
+
+      if (buf.length < COUNTER_PREFIX_LEN + 16) {
+        // 帧过短（连 GCM tag 都不够）：直接丢弃
+        return
       }
 
-      // 我们强制携带了 IV。也可以使用 deriveIV(baseIV, ts) 校验一致性
-      const iv = buf.slice(0, FRAME_IV_LEN)
-      const ciphertext = buf.slice(FRAME_IV_LEN)
+      const counter = readCounterBE(buf, 0)
+      const counterKey = counter.toString()
+
+      // 重放检查：同 counter 在窗口内出现过则丢弃
+      if (recent.has(counterKey)) return
+      recent.add(counterKey)
+      recentOrder.push(counterKey)
+      if (recentOrder.length > RECENT_WINDOW) {
+        const old = recentOrder.shift()!
+        recent.delete(old)
+      }
+
+      const iv = counterToIV(baseIV, counter)
+      const ciphertext = buf.slice(COUNTER_PREFIX_LEN)
       try {
         const plain = await crypto.subtle.decrypt(
           { name: 'AES-GCM', iv: iv as unknown as BufferSource },

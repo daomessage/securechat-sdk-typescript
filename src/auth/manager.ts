@@ -86,19 +86,31 @@ export class AuthModule {
       aliasId = regData.alias_id
     } catch (e: any) {
       if (e.message?.includes('409')) {
-        // 409: 公钥已注册，从错误信息中解析 uuid 和 alias_id
-        try {
-          const body = JSON.parse(e.message.replace(/^409:\s*/, ''))
-          userUUID = body.uuid
-          aliasId = body.alias_id
-        } catch {
-          // 回退：尝试从本地存储恢复
-          const stored = await loadIdentity()
-          if (!stored) {
-            throw new Error('此公钥已注册，服务端未返回身份信息。请联系管理员。')
-          }
+        // 409: 公钥已注册 — P3.7 加固：
+        //   - 先从本地 identity 取 uuid/aliasId（可信源 = 用户助记词派生的本地状态）
+        //   - 只在本地**没有**任何 identity 时才信任服务端 409 body
+        //   - 避免被恶意 relay 通过伪造 409 body 覆盖本地身份
+        const stored = await loadIdentity()
+        if (stored) {
+          // 本地已有：用本地值（服务端 body 不可信，可能被篡改）
           userUUID = stored.uuid
           aliasId = stored.aliasId
+        } else {
+          // 无本地 identity，尝试从 server 409 body 恢复
+          try {
+            const body = JSON.parse(e.message.replace(/^409:\s*/, ''))
+            // 严格校验 body 字段格式，防止被注入任意值
+            if (typeof body?.uuid === 'string' && typeof body?.alias_id === 'string'
+                && /^[0-9a-f-]{36}$/i.test(body.uuid)
+                && /^[a-z0-9_]{3,32}$|^[0-9]{6,12}$/.test(body.alias_id)) {
+              userUUID = body.uuid
+              aliasId = body.alias_id
+            } else {
+              throw new Error('server returned malformed 409 body')
+            }
+          } catch (parseErr) {
+            throw new Error('此公钥已注册但无本地身份，且服务端 409 body 无效。请检查中继地址是否正确。')
+          }
         }
         if (!userUUID) {
           throw new Error('恢复失败：无法获取用户标识')

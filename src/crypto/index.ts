@@ -87,32 +87,76 @@ export async function decryptMessage(
   return decrypt(env.payload, sessionKeyBytes)
 }
 
-// ─── Ed25519 RTC 信令签名（T-052）────────────────────────────
+// ─── Ed25519 RTC 信令签名（T-052 + 2026-04 加固）────────────────
 // 架构 §3.3.1：所有 RTC 信令防中间人注入
+//
+// 🔒 加固要点：
+//   1. 自动注入 _ts（毫秒时间戳）+ _nonce（16B 随机）
+//   2. call_id 必须在 payload 中，签名覆盖
+//   3. 接收端 verifySignal 额外校验 |now - _ts| < 60s 防重放
+//   4. 维护 nonce 最近 5 分钟窗口防重复投递
 
-/** signSignal：对 RTC 信令 JSON 签名 */
+/** 签名覆盖的时间窗，单位毫秒 */
+export const SIGNAL_MAX_AGE_MS = 60_000
+
+/** signSignal：对 RTC 信令 JSON 签名（自动附加 _ts + _nonce）*/
 export function signSignal(
   signalPayload: Record<string, unknown>,
   signingPrivKey: Uint8Array
 ): Record<string, unknown> {
-  const canonical = JSON.stringify(signalPayload, Object.keys(signalPayload).sort())
+  const nonce = crypto.getRandomValues(new Uint8Array(16))
+  const withMeta: Record<string, unknown> = {
+    ...signalPayload,
+    _ts: Date.now(),
+    _nonce: toHex(nonce),
+  }
+  const canonical = JSON.stringify(withMeta, Object.keys(withMeta).sort())
   const bytes = new TextEncoder().encode(canonical)
   const sig = ed25519.sign(bytes, signingPrivKey)
-  return { ...signalPayload, _sig: toHex(sig) }
+  return { ...withMeta, _sig: toHex(sig) }
 }
 
-/** verifySignal：验证 RTC 信令签名 */
+const seenNonces = new Map<string, number>() // nonce → expireAtMs
+
+function rememberNonce(nonce: string, ttlMs: number) {
+  const expire = Date.now() + ttlMs
+  seenNonces.set(nonce, expire)
+  // 清理过期项（amortized O(1)）
+  if (seenNonces.size > 2048) {
+    const now = Date.now()
+    for (const [k, v] of seenNonces) {
+      if (v < now) seenNonces.delete(k)
+    }
+  }
+}
+
+/** verifySignal：验证签名 + 时间窗 + nonce 去重 */
 export function verifySignal(
   signalPayload: Record<string, unknown>,
   signatoryPubKey: Uint8Array
 ): boolean {
   const { _sig, ...rest } = signalPayload
   if (typeof _sig !== 'string') return false
+
+  // 1) 时间戳必须存在且在窗口内
+  const ts = rest._ts
+  if (typeof ts !== 'number' || Math.abs(Date.now() - ts) > SIGNAL_MAX_AGE_MS) {
+    return false
+  }
+  // 2) nonce 必须存在且未见过
+  const nonce = rest._nonce
+  if (typeof nonce !== 'string' || nonce.length !== 32) return false
+  const prev = seenNonces.get(nonce)
+  if (prev !== undefined && prev > Date.now()) return false // 已见过 → 重放
+
+  // 3) 签名校验
   const canonical = JSON.stringify(rest, Object.keys(rest).sort())
   const bytes = new TextEncoder().encode(canonical)
   try {
     const sig = Uint8Array.from((_sig).match(/.{2}/g)!.map(h => parseInt(h, 16)))
-    return ed25519.verify(sig, bytes, signatoryPubKey)
+    const ok = ed25519.verify(sig, bytes, signatoryPubKey)
+    if (ok) rememberNonce(nonce, 5 * 60_000)
+    return ok
   } catch {
     return false
   }
