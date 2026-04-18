@@ -71,6 +71,59 @@ export class CallModule {
     this.pendingCandidates = [];
   }
 
+  /**
+   * getUserMedia 带超时 + 自动降级包装:
+   * - 主请求超过 timeoutMs 没 resolve/reject → 抛 'gUM timeout'
+   * - audio+video 时,若 timeout 或 reject,自动重试 audio-only(同样带超时)
+   * - 纯音频再失败 → 向上抛,外层 catch 负责 cleanup('ended')
+   *
+   * 修复:某些浏览器/环境下 getUserMedia 既不 resolve 也不 reject,
+   * 导致 call() 永远卡在 await,UI 卡在"正在呼叫",日志无任何输出。
+   */
+  private async getUserMediaWithTimeout(
+    constraints: MediaStreamConstraints,
+    timeoutMs: number = 6000
+  ): Promise<MediaStream> {
+    const wantsVideo = !!constraints.video
+    const attempt = (c: MediaStreamConstraints): Promise<MediaStream> => {
+      return new Promise<MediaStream>((resolve, reject) => {
+        let settled = false
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true
+            reject(new Error(`getUserMedia timeout after ${timeoutMs}ms (constraints=${JSON.stringify(c)})`))
+          }
+        }, timeoutMs)
+        navigator.mediaDevices.getUserMedia(c)
+          .then(s => {
+            if (settled) {
+              s.getTracks().forEach(t => t.stop())
+              return
+            }
+            settled = true
+            clearTimeout(timer)
+            resolve(s)
+          })
+          .catch(e => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            reject(e)
+          })
+      })
+    }
+
+    try {
+      return await attempt(constraints)
+    } catch (err) {
+      if (wantsVideo) {
+        console.warn('[CallModule] getUserMedia(video) 失败/超时,降级到音频纯模式:', err)
+        return await attempt({ audio: true, video: false })
+      }
+      throw err
+    }
+  }
+
   private signingPrivKey: Uint8Array
   private signingPubKey: Uint8Array
   private myAliasId: string
@@ -128,19 +181,14 @@ export class CallModule {
       console.log('[CallModule] 获取到 ICE Config:', iceConfig)
       this.pc = this.createPeerConnection(iceConfig, toAliasId)
 
-      // 请求麦克风；视频按需（浏览器无摄像头时不强要求）
-      try {
-        console.log('[CallModule] 尝试请求 getUserMedia (带视频选项)', opts);
-        this.localStream = await navigator.mediaDevices.getUserMedia({
-          audio: opts.audio ?? true,
-          video: opts.video ?? false,
-        })
-      } catch (err) {
-        // 麦克风权限拒绝或无设备：降级为纯音频
-        console.warn('[CallModule] 带视频获取媒体失败，降级为音频', err);
-        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      }
-      console.log('[CallModule] 获取本地媒体流成功');
+      // 请求麦克风;视频按需(浏览器无摄像头/权限拒绝/gUM hang → 自动降级到纯音频)
+      console.log('[CallModule] 尝试请求 getUserMedia', opts);
+      this.localStream = await this.getUserMediaWithTimeout({
+        audio: opts.audio ?? true,
+        video: opts.video ?? false,
+      }, 6000)
+      console.log('[CallModule] 获取本地媒体流成功',
+        this.localStream.getTracks().map(t => `${t.kind}:${t.label.slice(0, 20)}`));
       this.localStream.getTracks().forEach(t => this.pc!.addTrack(t, this.localStream!))
       this.onLocalStream?.(this.localStream)
 
@@ -164,12 +212,11 @@ export class CallModule {
 
     try {
       const remoteHasVideo = this.remoteStream ? this.remoteStream.getVideoTracks().length > 0 : false;
-      // 先尝试音象（如果对方发起的是视频通话），失败降级纯音频
-      try {
-        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: remoteHasVideo })
-      } catch {
-        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      }
+      // 同 call() 使用带超时的 getUserMedia,视频失败自动降级到音频
+      this.localStream = await this.getUserMediaWithTimeout(
+        { audio: true, video: remoteHasVideo },
+        6000
+      )
       this.localStream.getTracks().forEach(t => this.pc!.addTrack(t, this.localStream!))
       this.onLocalStream?.(this.localStream)
 
