@@ -74,7 +74,7 @@ export class CallsModule {
     options: CallOptions
   ): Promise<void> {
     try {
-      await (this.inner as any).startCall?.(peerAliasId, options)
+      await (this.inner as any).call?.(peerAliasId, options)
     } catch (e) {
       this.events?.emitError({
         kind: 'network',
@@ -87,7 +87,7 @@ export class CallsModule {
 
   async accept(): Promise<void> {
     try {
-      await (this.inner as any).acceptCall?.()
+      await (this.inner as any).answer?.()
     } catch (e) {
       this.events?.emitError({
         kind: 'network',
@@ -99,7 +99,7 @@ export class CallsModule {
 
   async reject(reason?: string): Promise<void> {
     try {
-      await (this.inner as any).rejectCall?.(reason)
+      (this.inner as any).reject?.(reason)
     } catch (e) {
       this.events?.emitError({
         kind: 'network',
@@ -119,5 +119,27 @@ export class CallsModule {
       })
       throw e
     }
+  }
+
+  // ─── 0.2.x/PWA 兼容别名 ──────────────────
+
+  /** 为 PWA 旧 API 提供的别名: start() */
+  async call(peerAliasId: string, options: CallOptions = { audio: true, video: false }): Promise<void> {
+    return this.start(peerAliasId, options)
+  }
+
+  /** 为 PWA 旧 API 提供的别名: accept() */
+  async answer(): Promise<void> {
+    return this.accept()
+  }
+
+  /** 获取本地流 */
+  getLocalStream(): MediaStream | null {
+    return this._localStream.value
+  }
+
+  /** 获取远端流 */
+  getRemoteStream(): MediaStream | null {
+    return this._remoteStream.value
   }
 }
