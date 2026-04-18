@@ -93,6 +93,11 @@ export class MediaModule {
     return asObservable(subject)
   }
 
+  /** 兼容 0.2.x API · 下载并解密媒介 */
+  async downloadDecryptedMedia(mediaKey: string, conversationId: string): Promise<ArrayBuffer> {
+    return this._inner.downloadDecryptedMedia(mediaKey, conversationId)
+  }
+
   /** 释放已完成上传的进度对象 */
   dispose(messageId: string): void {
     const s = this._uploads.get(messageId)

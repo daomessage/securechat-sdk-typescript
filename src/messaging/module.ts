@@ -79,17 +79,57 @@ export class MessagesModule {
     return id
   }
 
-  /** 标记会话为已读(会话摘要 unreadCount 归零) */
-  async markAsRead(conversationId: string): Promise<void> {
-    void conversationId // 保留签名 · 底层读回执路径由 inner 负责, 这里只刷新摘要
-    await this._refreshSummary()
-  }
-
   /** 清除某会话的本地消息(测试/退出账号场景) */
   async clearConversation(conversationId: string): Promise<void> {
     const subject = this._byConvId.get(conversationId)
     if (subject) subject.next([])
     await this._refreshSummary()
+  }
+
+  // ─── 命令式兼容(转发到底层) ──────────
+
+  /** 向对方发送正在输入事件 */
+  sendTyping(convId: string, toAliasId: string): void {
+    this.inner.sendTyping(toAliasId, convId)
+  }
+
+  /** 标记对方消息为已读 */
+  markAsRead(convId: string, maxSeq: number, toAliasId: string): void {
+    this.inner.sendRead(convId, maxSeq, toAliasId)
+  }
+
+  /** 撤回自己发的消息 */
+  retract(messageId: string, toAliasId: string, conversationId: string): void {
+    this.inner.sendRetract(messageId, toAliasId, conversationId)
+  }
+
+  /** 获取本地历史消息 */
+  async getHistory(convId: string, opts?: { limit?: number; before?: number }): Promise<StoredMessage[]> {
+    return loadMessages(convId, opts)
+  }
+
+  /** 清除指定会话的本地消息 */
+  async clearHistory(convId: string): Promise<void> {
+    const { clearConversationMessages } = await import('./store')
+    await clearConversationMessages(convId)
+    const subject = this._byConvId.get(convId)
+    if (subject) subject.next([])
+    await this._refreshSummary()
+  }
+
+  /** 清除全部会话的本地消息 */
+  async clearAllConversations(): Promise<void> {
+    const { clearAllMessages } = await import('./store')
+    await clearAllMessages()
+    for (const subject of this._byConvId.values()) {
+      subject.next([])
+    }
+    this._conversations.next([])
+  }
+
+  /** 导出所有会话为 Blob URL(NDJSON) */
+  async exportAll(): Promise<string> {
+    throw new Error('exportAll: not implemented in 0.4.0 (needs server endpoint wiring, landing in 0.4.1)')
   }
 
   // ─── 内部 ─────────────────────────────────────────────

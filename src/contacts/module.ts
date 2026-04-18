@@ -137,6 +137,31 @@ export class ContactsModule {
     }
   }
 
+  /**
+   * 兼容 0.2.x API · 一次性拉取好友列表快照
+   * 指定描述: 底层执行 refresh(), 返回最新 friends 数组
+   * 推荐新代码用 observeFriends().subscribe() 或 observeFriends().value
+   */
+  /** 兼容 0.2.x API */
+  async acceptFriendRequest(friendshipId: number): Promise<string> {
+    return this.accept(friendshipId)
+  }
+
+  /** 兼容 0.2.x API */
+  async sendFriendRequest(toAliasId: string): Promise<void> {
+    return this.sendRequest(toAliasId)
+  }
+
+  /** 兼容 0.2.x API */
+  async rejectFriendRequest(friendshipId: number): Promise<void> {
+    return this.reject(friendshipId)
+  }
+
+  async syncFriends(): Promise<FriendProfile[]> {
+    await this._refresh()
+    return this._friends.value
+  }
+
   /** 手动触发刷新(WS 收到好友事件时 SDK 内部调用) */
   async refresh(): Promise<void> {
     return this._refresh()

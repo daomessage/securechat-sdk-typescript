@@ -117,3 +117,12 @@ export type {
   SDKError,
   SDKErrorKind,
 } from './events'
+
+// ── 扩展事件总线(typing / statusChange / channelPost / goaway) ──
+export type {
+  PublicExtendedEventBus,
+  TypingEvent,
+  MessageStatusEvent,
+  ChannelPostEvent,
+  GoawayEvent,
+} from './events/streams-ext'
