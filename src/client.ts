@@ -123,12 +123,36 @@ export class SecureChatClient {
   }
 
   async connect(): Promise<void> {
-    await (this.transport as any).connect?.()
+    const uuid = this.auth.internalUUID
+    const token = this.http.getToken()
+
+    if (!uuid || !token) {
+      throw new Error('No local identity + token. Call registerAccount / restoreSession first.')
+    }
+
+    let wsBase = this.http.getApiBase()
+    wsBase = wsBase.replace(/^http/, 'ws')
+
+    // 优先使用 ticket 机制(服务端 30s TTL 一次性消费)
+    try {
+      const resp = await this.http.post('/api/v1/ws/ticket', {})
+      if (resp && resp.ticket) {
+        this.transport.connect(`${wsBase}/ws?user_uuid=${uuid}&ticket=${resp.ticket}`)
+        return
+      }
+    } catch (e) {
+      // ticket 接口不可用(旧版服务端), 降级到 token 方式
+      // eslint-disable-next-line no-console
+      console.warn('[SDK] ws/ticket not available, falling back to token in URL:', e)
+    }
+
+    // 降级：旧版服务端兼容
+    this.transport.connect(`${wsBase}/ws?user_uuid=${uuid}&token=${token}`)
   }
 
   /** 手动断开 WS(调试 / 省电模式) */
   disconnect(): void {
-    (this.transport as any).disconnect?.()
+    this.transport.disconnect()
   }
 
   get isReady(): boolean {
