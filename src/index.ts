@@ -94,3 +94,36 @@ export {
 
 // ── 频道交易类型（T-096）——————————————————————————————————————
 export { type ChannelTradeOrder } from './channels/manager'
+
+// ═══════════════════════════════════════════════════════════════════
+// ══ 0.3.0 Reactive API
+// ═══════════════════════════════════════════════════════════════════
+
+export type {
+  Observable,
+  Observer,
+  Subscribable,
+  Subscription,
+} from './reactive'
+
+export type {
+  PublicEventBus,
+  SyncState,
+  SDKError,
+  SDKErrorKind,
+} from './events'
+
+export { ReactiveContactsModule } from './contacts/reactive-manager'
+export {
+  ReactiveMessagesModule,
+  type ConversationSummary,
+} from './messaging/reactive-messages'
+export {
+  ReactiveMediaModule,
+  type UploadProgress,
+  type UploadPhase,
+  type MediaKind,
+} from './media/reactive-media'
+export { ReactiveSecurityModule } from './security/reactive-security'
+export { ReactiveCallsModule } from './calls/reactive-calls'
+export { attachReactive, type ReactiveFacade } from './reactive-client'
