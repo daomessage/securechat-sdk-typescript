@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "SecureChat End-to-End Encrypted Messaging SDK",
   "author": "Daomessage Team",
   "license": "MIT",
@@ -36,11 +36,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    },
-    "./reactive": {
-      "types": "./dist/index-reactive.d.ts",
-      "import": "./dist/index-reactive.js",
-      "require": "./dist/index-reactive.cjs"
     }
   },
   "scripts": {

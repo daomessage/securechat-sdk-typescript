@@ -55,7 +55,7 @@ export { type NetworkState } from './messaging/transport'
 export {
   SecureChatClient,
   type SecureChatClientOptions,
-} from './client-v2'
+} from './client'
 
 // ── 模块类(供类型引用)────────────────────────────────
 export {
