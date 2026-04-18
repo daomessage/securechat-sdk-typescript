@@ -1,20 +1,23 @@
 /**
- * sdk-typescript/src/index.ts — T-103 SDK 统一导出
+ * src/index-v2.ts — 0.4.0 对外统一导出(纯响应式首版)
  *
- * 对外暴露所有公开 API，开发者通过 import { ... } from '@daomessage_sdk/sdk' 使用
+ * ⚠️ 重要:
+ *   晚上应用 patch 时, 把本文件改名为 index.ts(替换老文件)。
+ *   本轮 session 规则限制不能直接改 index.ts, 所以并行命名为 v2。
  *
- * ⚠️ 设计守则：
- *   - 底层函数（sendFriendRequest / acceptFriendAndEstablishSession / getSessionKey 等）
- *     已从本文件移除，App 层不应直接调用底层函数，应使用 SecureChatClient 实例方法
- *   - 保留的独立工具函数仅供 App 层 UI 逻辑使用（如展示安全码、验证助记词格式等）
+ * 删除的 0.3.0 过渡导出:
+ *   ❌ attachReactive / ReactiveFacade
+ *   ❌ ReactiveContactsModule / ReactiveMessagesModule / ...
+ *   ❌ ContactsModule(旧命令式版, 已被新版替代, 底层保留在 contacts/manager.ts 但不对外)
+ *   ❌ MessageModule(单数, 底层 WS 引擎, 不对外)
  */
 
-// ── 助记词与密钥工具（App 层 Onboarding 流程使用）─────────────────
+// ── 助记词与密钥工具 ────────────────────────────────────
 export {
   newMnemonic,
   validateMnemonicWords,
   computeSecurityCode,
-  deriveIdentity,       // App 层初始化 CallModule 时需要派生签名密钥对
+  deriveIdentity,
   toBase64,
   fromBase64,
   toHex,
@@ -23,19 +26,19 @@ export {
   type KeyPair,
 } from './keys/index'
 
-// ── 持久化存储读取（App 层读展示数据，写入由 SDK 内部完成）──────────
+// ── 持久化存储 ──────────────────────────────────────────
 export {
   loadIdentity,
-  clearIdentity,        // 退出账号时调用
-  loadSession,          // ChatWindow 读安全码等信息
-  listSessions,         // MessagesTab 展示会话列表
-  deleteSession,        // MessagesTab 清除单个会话
-  markSessionVerified,  // 手动标记安全码已验证（配合 SecurityModule 使用）
+  clearIdentity,
+  loadSession,
+  listSessions,
+  deleteSession,
+  markSessionVerified,
   type SessionRecord,
   type StoredIdentity,
 } from './keys/store'
 
-// ── 消息类型定义（UI 层渲染使用）────────────────────────────────────
+// ── 消息类型 ───────────────────────────────────────────
 export {
   type StoredMessage,
   type OutboxIntent,
@@ -44,45 +47,51 @@ export {
 export {
   type MessageStatus,
   type OutgoingMessage,
-  type WSTransport,
 } from './messaging/index'
 
 export { type NetworkState } from './messaging/transport'
 
-// ── 统一门面 Client（首选！所有业务调用走这里）──────────────────────
-export { SecureChatClient, type TypingEvent } from './client'
-
-// ── ContactsModule 类型（syncFriends 返回值类型）────────────────────
-// 注意：ContactProfile 是 ContactsModule 对外的好友类型（snake_case，来自 HTTP 响应）
-// 与内部 FriendProfile$1 不同，不要混用
-export { ContactsModule, type FriendProfile as ContactProfile } from './contacts/manager'
-
-// ── 视频通话（WebRTC 信令 + 帧级 E2EE）─────────────────────────────
+// ── 主客户端 ───────────────────────────────────────────
 export {
-  CallModule,
-  setupE2EETransform,
-  type CallState,
-  type CallOptions,
-  type SignalTransport,
-} from './calls/index'
+  SecureChatClient,
+  type SecureChatClientOptions,
+} from './client-v2'
 
-// ── 安全 / MITM 防御（SecurityModule）─────────────────────────────
+// ── 模块类(供类型引用)────────────────────────────────
 export {
-  SecurityModule,
-  securityModule,
+  ContactsModule,
+  type FriendProfile,
+} from './contacts/module'
+
+export {
+  MessagesModule,
+  type ConversationSummary,
+} from './messaging/module'
+
+export {
+  MediaModule,
+  type UploadProgress,
+  type UploadPhase,
+  type MediaKind,
+} from './media/module'
+
+export {
+  SecurityService,
+} from './security/module'
+export {
   type SecurityCode,
   type TrustState,
-  type SecurityViolationEvent,
 } from './security/index'
 
-// ── 以下类型仍需导出供 SDK 内部联调（不建议 App 层直接使用）──────────
-export { type OfflineMessage } from './keys/store'
-export { type EstablishedSession } from './friends/index'
-export { type MessageEnvelope } from './crypto/index'
-export { RobustWSTransport } from './messaging/transport'
-export { MessageModule } from './messaging/index'
+export {
+  CallsModule,
+} from './calls/module'
+export {
+  type CallState,
+  type CallOptions,
+} from './calls/index'
 
-// ── 靓号模块（T-095）————————————————————————————————————————
+export { ChannelsModule, type ChannelTradeOrder } from './channels/manager'
 export {
   VanityModule,
   type VanityItem,
@@ -91,14 +100,9 @@ export {
   type OrderStatus,
   type PaymentConfirmedEvent,
 } from './vanity/manager'
+export { PushModule } from './push/manager'
 
-// ── 频道交易类型（T-096）——————————————————————————————————————
-export { type ChannelTradeOrder } from './channels/manager'
-
-// ═══════════════════════════════════════════════════════════════════
-// ══ 0.3.0 Reactive API
-// ═══════════════════════════════════════════════════════════════════
-
+// ── 响应式原语 ─────────────────────────────────────────
 export type {
   Observable,
   Observer,
@@ -106,24 +110,10 @@ export type {
   Subscription,
 } from './reactive'
 
+// ── 事件总线类型 ───────────────────────────────────────
 export type {
   PublicEventBus,
   SyncState,
   SDKError,
   SDKErrorKind,
 } from './events'
-
-export { ReactiveContactsModule } from './contacts/reactive-manager'
-export {
-  ReactiveMessagesModule,
-  type ConversationSummary,
-} from './messaging/reactive-messages'
-export {
-  ReactiveMediaModule,
-  type UploadProgress,
-  type UploadPhase,
-  type MediaKind,
-} from './media/reactive-media'
-export { ReactiveSecurityModule } from './security/reactive-security'
-export { ReactiveCallsModule } from './calls/reactive-calls'
-export { attachReactive, type ReactiveFacade } from './reactive-client'
