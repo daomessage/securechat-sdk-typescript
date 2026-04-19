@@ -26,6 +26,49 @@ export class CallsModule {
   private _localStream = new BehaviorSubject<MediaStream | null>(null)
   private _remoteStream = new BehaviorSubject<MediaStream | null>(null)
 
+  // PWA/旧 API 风格的回调 slot - 用户可以直接 mod.onXxx = (...) => {...} 挂监听
+  // 1.0.7 之前这些赋值根本没生效(属性被挂到外壳但永远不触发),
+  // 1.0.8 起通过 setter 把赋值转发到 inner CallModule,保证来电/状态/错误回调真正触发。
+  private _extraOnStateChange: ((s: CallState) => void) | undefined
+  private _extraOnLocalStream: ((s: MediaStream) => void) | undefined
+  private _extraOnRemoteStream: ((s: MediaStream) => void) | undefined
+
+  set onStateChange(cb: ((s: CallState) => void) | undefined) {
+    this._extraOnStateChange = cb
+  }
+  get onStateChange(): ((s: CallState) => void) | undefined {
+    return this._extraOnStateChange
+  }
+
+  set onLocalStream(cb: ((s: MediaStream) => void) | undefined) {
+    this._extraOnLocalStream = cb
+  }
+  get onLocalStream(): ((s: MediaStream) => void) | undefined {
+    return this._extraOnLocalStream
+  }
+
+  set onRemoteStream(cb: ((s: MediaStream) => void) | undefined) {
+    this._extraOnRemoteStream = cb
+  }
+  get onRemoteStream(): ((s: MediaStream) => void) | undefined {
+    return this._extraOnRemoteStream
+  }
+
+  // onIncomingCall / onError 直接透传到 inner(inner 才是真正触发这些回调的层)
+  set onIncomingCall(cb: ((fromAlias: string) => void) | undefined) {
+    this.inner.onIncomingCall = cb
+  }
+  get onIncomingCall(): ((fromAlias: string) => void) | undefined {
+    return this.inner.onIncomingCall
+  }
+
+  set onError(cb: ((err: Error) => void) | undefined) {
+    this.inner.onError = cb
+  }
+  get onError(): ((err: Error) => void) | undefined {
+    return this.inner.onError
+  }
+
   constructor(
     private readonly inner: LowCallModule,
     private readonly events?: EventBus
@@ -34,18 +77,21 @@ export class CallsModule {
     this.inner.onStateChange = (s: CallState) => {
       prevState?.(s)
       this._state.next(s)
+      this._extraOnStateChange?.(s)   // ← 桥接给 PWA 挂的 onStateChange
     }
 
     const prevLocal = this.inner.onLocalStream
     this.inner.onLocalStream = (s: MediaStream) => {
       prevLocal?.(s)
       this._localStream.next(s)
+      this._extraOnLocalStream?.(s)
     }
 
     const prevRemote = this.inner.onRemoteStream
     this.inner.onRemoteStream = (s: MediaStream) => {
       prevRemote?.(s)
       this._remoteStream.next(s)
+      this._extraOnRemoteStream?.(s)
     }
   }
 

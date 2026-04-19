@@ -174,32 +174,32 @@ export class CallModule {
     this._remoteAlias = toAliasId
     this.setState('calling')
 
-    console.log('[CallModule] 开始发起呼叫:', toAliasId, 'callId:', this.callId)
+    console.error('🔴 [CallModule] STEP 1: 进入 call()', toAliasId)
 
     try {
+      console.error('🔴 [CallModule] STEP 2: 请求 ICE config...')
       const iceConfig = await this.iceConfigProvider()
-      console.log('[CallModule] 获取到 ICE Config:', iceConfig)
+      console.error('🔴 [CallModule] STEP 3: ICE config OK, createPeerConnection')
       this.pc = this.createPeerConnection(iceConfig, toAliasId)
 
-      // 请求麦克风;视频按需(浏览器无摄像头/权限拒绝/gUM hang → 自动降级到纯音频)
-      console.log('[CallModule] 尝试请求 getUserMedia', opts);
+      console.error('🔴 [CallModule] STEP 4: getUserMediaWithTimeout', opts)
       this.localStream = await this.getUserMediaWithTimeout({
         audio: opts.audio ?? true,
         video: opts.video ?? false,
       }, 6000)
-      console.log('[CallModule] 获取本地媒体流成功',
-        this.localStream.getTracks().map(t => `${t.kind}:${t.label.slice(0, 20)}`));
+      console.error('🔴 [CallModule] STEP 5: gUM OK',
+        this.localStream.getTracks().map(t => t.kind))
       this.localStream.getTracks().forEach(t => this.pc!.addTrack(t, this.localStream!))
       this.onLocalStream?.(this.localStream)
 
-      console.log('[CallModule] 正在创建 Offer...');
+      console.error('🔴 [CallModule] STEP 6: createOffer...')
       const offer = await this.pc.createOffer()
-      console.log('[CallModule] Offer 创建成功，正在 setLocalDescription...');
+      console.error('🔴 [CallModule] STEP 7: offer OK, setLocalDescription...')
       await this.pc.setLocalDescription(offer)
-      console.log('[CallModule] setLocalDescription 成功，发送 call_offer 信令');
+      console.error('🔴 [CallModule] STEP 8: setLocal OK, send call_offer')
       this.sendSignal(toAliasId, 'call_offer', { sdp: offer.sdp, type: offer.type })
     } catch (err) {
-      console.error('[CallModule] call() 失败', err)
+      console.error('🔴 [CallModule] call() 捕获异常:', err)
       this.onError?.(err as Error)
       this.cleanup('ended')
     }
@@ -333,18 +333,26 @@ export class CallModule {
   }
 
   private async handleOffer(from: string, payload: Record<string, unknown>): Promise<void> {
+    console.error('🟢 [CallModule] RCVD STEP 1: handleOffer from', from)
     this._callerAlias = from
     this._remoteAlias = from
+    console.error('🟢 [CallModule] RCVD STEP 2: 触发 onIncomingCall 回调', !!this.onIncomingCall)
     this.onIncomingCall?.(from)
+    console.error('🟢 [CallModule] RCVD STEP 3: setState(ringing)')
     this.setState('ringing')
 
+    console.error('🟢 [CallModule] RCVD STEP 4: 请求 ICE config...')
     const iceConfig = await this.iceConfigProvider()
+    console.error('🟢 [CallModule] RCVD STEP 5: ICE config OK, createPeerConnection')
     this.pc = this.createPeerConnection(iceConfig, from)
+    console.error('🟢 [CallModule] RCVD STEP 6: setRemoteDescription...')
     await this.pc.setRemoteDescription({
       type: payload['type'] as RTCSdpType,
       sdp: payload['sdp'] as string,
     })
+    console.error('🟢 [CallModule] RCVD STEP 7: setRemoteDescription OK, flushIceCandidates')
     this.flushIceCandidates()
+    console.error('🟢 [CallModule] RCVD STEP 8: done waiting for user to answer()')
   }
 
   private async handleAnswer(payload: Record<string, unknown>): Promise<void> {
