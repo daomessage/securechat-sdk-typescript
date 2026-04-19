@@ -15,6 +15,7 @@ import {
 } from '../reactive'
 import type { EventBus } from '../events'
 import { MediaModule as LowMediaModule } from './manager'
+import type { MessagesModule } from '../messaging/module'
 
 export type UploadPhase = 'encrypting' | 'uploading' | 'done' | 'failed'
 
@@ -31,50 +32,115 @@ export type MediaKind = 'image' | 'file' | 'voice'
 export class MediaModule {
   private _uploads = new Map<string, BehaviorSubject<UploadProgress>>()
   private _inner: LowMediaModule
+  private _messages?: MessagesModule
 
   constructor(
     low: LowMediaModule,
-    private readonly events?: EventBus
+    private readonly events?: EventBus,
+    messages?: MessagesModule
   ) {
     this._inner = low
+    this._messages = messages
   }
 
   // ─── 命令式 · 发送 ────────────────────────────────────
+  //
+  // 语义:sendX = (1) 加密分片上传到 relay → 拿到 mediaKey
+  //             (2) 组装 JSON payload 通过 messages.send() 发 WS 消息给对端
+  //             (3) 返回 messageId (用于 observeUpload 追踪进度)
+  //
+  // 消息格式(对端 bubbles 约定):
+  //   image: {"type":"image","key":mediaKey,"thumbnail":base64}
+  //   file:  {"type":"file","key":mediaKey,"name":fileName,"size":bytes}
+  //   voice: {"type":"voice","key":mediaKey,"durationMs":num}
+  //
+  // 1.0.3 以前 sendX 只上传不发 IM,对端永远收不到,本地也无消息气泡。
 
   async sendImage(
     conversationId: string,
+    toAliasId: string,
     file: File,
-    opts?: { maxDim?: number; quality?: number }
+    opts?: { maxDim?: number; quality?: number; thumbnail?: string; replyToId?: string }
   ): Promise<string> {
-    return this._upload('image', file, async () =>
-      this._inner.uploadImage(
+    return this._upload('image', file, async () => {
+      const mediaKey = await this._inner.uploadImage(
         conversationId,
         file,
         opts?.maxDim ?? 1920,
         opts?.quality ?? 0.85
       )
-    )
+      const payload: Record<string, unknown> = {
+        type: 'image',
+        key: mediaKey,
+      }
+      if (opts?.thumbnail) payload.thumbnail = opts.thumbnail
+      await this._sendMessage(conversationId, toAliasId, JSON.stringify(payload), opts?.replyToId)
+      return mediaKey
+    })
   }
 
-  async sendFile(conversationId: string, file: File): Promise<string> {
-    return this._upload('file', file, async () =>
-      this._inner.uploadFile(file, conversationId)
-    )
+  async sendFile(
+    conversationId: string,
+    toAliasId: string,
+    file: File,
+    opts?: { replyToId?: string }
+  ): Promise<string> {
+    return this._upload('file', file, async () => {
+      const mediaKey = await this._inner.uploadFile(file, conversationId)
+      // uploadFile 历史返回 "[file]mediaKey|name|size",这里剥出裸 key 做 JSON payload
+      const cleanKey = mediaKey.startsWith('[file]')
+        ? mediaKey.replace('[file]', '').split('|')[0]
+        : mediaKey
+      const payload = JSON.stringify({
+        type: 'file',
+        key: cleanKey,
+        name: file.name,
+        size: file.size,
+      })
+      await this._sendMessage(conversationId, toAliasId, payload, opts?.replyToId)
+      return cleanKey
+    })
   }
 
   async sendVoice(
     conversationId: string,
+    toAliasId: string,
     blob: Blob,
-    durationMs: number
+    durationMs: number,
+    opts?: { replyToId?: string }
   ): Promise<string> {
     const fakeFile = new File(
       [blob],
       `voice_${Date.now()}.webm`,
       { type: blob.type || 'audio/webm' }
     )
-    return this._upload('voice', fakeFile, async () =>
-      this._inner.uploadVoice(blob, conversationId, durationMs)
-    )
+    return this._upload('voice', fakeFile, async () => {
+      const mediaKey = await this._inner.uploadVoice(blob, conversationId, durationMs)
+      const cleanKey = mediaKey.startsWith('[voice]')
+        ? mediaKey.replace('[voice]', '').split('|')[0]
+        : mediaKey
+      const payload = JSON.stringify({
+        type: 'voice',
+        key: cleanKey,
+        durationMs,
+      })
+      await this._sendMessage(conversationId, toAliasId, payload, opts?.replyToId)
+      return cleanKey
+    })
+  }
+
+  /** 内部:通过 messages 模块把 payload 作为 IM 消息发给对端 */
+  private async _sendMessage(
+    conversationId: string,
+    toAliasId: string,
+    text: string,
+    replyToId?: string
+  ): Promise<void> {
+    if (!this._messages) {
+      console.warn('[MediaModule] messages 模块未注入,跳过 IM 发送(上传已成功但对端收不到)')
+      return
+    }
+    await this._messages.send({ conversationId, toAliasId, text, replyToId })
   }
 
   // ─── 观察式 · 进度流 ─────────────────────────────────

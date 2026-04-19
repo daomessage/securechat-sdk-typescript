@@ -74,7 +74,7 @@ export class SecureChatClient {
     this.auth = new AuthModule(this.http)
     this.contacts = new ContactsModule(this.http, this._bus.core)
     this.messages = new MessagesModule(this._messageInner, this._bus.core)
-    this.media = new MediaModule(new MediaInner(this.http), this._bus.core)
+    this.media = new MediaModule(new MediaInner(this.http), this._bus.core, this.messages)
     this.security = new SecurityService(innerSecurity)
     this.channels = new ChannelsModule(this.http)
     this.vanity = new VanityModule(this.http)

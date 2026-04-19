@@ -120,9 +120,10 @@ describe('smoke 0.4.0 · Contacts', () => {
 
 describe('smoke 0.4.0 · Media', () => {
   it('sendImage → done', async () => {
-    const mod = new MediaModule(stubMedia())
+    const messages: any = { send: async () => 'msg-id' }
+    const mod = new MediaModule(stubMedia(), undefined, messages)
     const file = new File([new Uint8Array(100)], 'x.jpg')
-    const id = await mod.sendImage('c1', file)
+    const id = await mod.sendImage('c1', 'bob', file)
     expect(mod.observeUpload(id).value.phase).toBe('done')
   })
 })
