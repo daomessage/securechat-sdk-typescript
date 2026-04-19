@@ -36,7 +36,8 @@ describe('MediaModule (0.4.0)', () => {
     expect(sentMsg.toAliasId).toBe('bob')
     const payload = JSON.parse(sentMsg.text)
     expect(payload.type).toBe('image')
-    expect(payload.key).toBe('[img]k1')
+    // 1.0.5: [img] 前缀被剥离,对端只拿到裸 mediaKey (否则下载会把 [img] 当 key 一部分,403)
+    expect(payload.key).toBe('k1')
   })
 
   it('observeUpload 未知 messageId → failed', () => {

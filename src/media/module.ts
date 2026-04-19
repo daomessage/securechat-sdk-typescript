@@ -63,12 +63,14 @@ export class MediaModule {
     opts?: { maxDim?: number; quality?: number; thumbnail?: string; replyToId?: string }
   ): Promise<string> {
     return this._upload('image', file, async () => {
-      const mediaKey = await this._inner.uploadImage(
+      const raw = await this._inner.uploadImage(
         conversationId,
         file,
         opts?.maxDim ?? 1920,
         opts?.quality ?? 0.85
       )
+      // uploadImage 历史返回 "[img]mediaKey",剥出裸 key(否则下载端会带 [img] 前缀查 S3 查不到)
+      const mediaKey = raw.startsWith('[img]') ? raw.slice(5) : raw
       const payload: Record<string, unknown> = {
         type: 'image',
         key: mediaKey,
