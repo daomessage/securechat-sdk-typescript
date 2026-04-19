@@ -40,10 +40,15 @@ export interface OfflineMessage {
 // ─── DB 初始化 ───────────────────────────────────────────────
 
 let _db: IDBPDatabase | null = null
+let _dbOpening: Promise<IDBPDatabase> | null = null
 
 async function getDB(): Promise<IDBPDatabase> {
+  // 如果连接还活着,直接返回
   if (_db) return _db
-  _db = await openDB(DB_NAME, DB_VERSION, {
+  // 并发保护:多个调用者共享同一个 open promise,避免 race open 导致 "connection is closing"
+  if (_dbOpening) return _dbOpening
+
+  _dbOpening = openDB(DB_NAME, DB_VERSION, {
     upgrade(db) {
       if (!db.objectStoreNames.contains('identity')) {
         db.createObjectStore('identity', { keyPath: 'uuid' })
@@ -57,7 +62,21 @@ async function getDB(): Promise<IDBPDatabase> {
         o.createIndex('byConvSeq', ['conversationId', 'seq'], { unique: true })
       }
     },
+    // 其他 tab 升级 schema 时,浏览器会请求本 tab 关闭老连接
+    blocking() {
+      try { _db?.close() } catch {}
+      _db = null
+      _dbOpening = null
+    },
+    // 本连接被硬关闭(浏览器/其他 tab 触发)- 清 cache,下次自动重开
+    terminated() {
+      _db = null
+      _dbOpening = null
+    },
   })
+
+  _db = await _dbOpening
+  _dbOpening = null
   return _db
 }
 

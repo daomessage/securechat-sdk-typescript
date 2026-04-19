@@ -28,10 +28,13 @@ export interface OutboxIntent {
 }
 
 let _db: IDBPDatabase | null = null
+let _dbOpening: Promise<IDBPDatabase> | null = null
 
 async function getDB(): Promise<IDBPDatabase> {
   if (_db) return _db
-  _db = await openDB(DB_NAME, DB_VERSION, {
+  if (_dbOpening) return _dbOpening
+
+  _dbOpening = openDB(DB_NAME, DB_VERSION, {
     upgrade(db) {
       if (!db.objectStoreNames.contains('messages')) {
         const store = db.createObjectStore('messages', { keyPath: 'id' })
@@ -43,7 +46,19 @@ async function getDB(): Promise<IDBPDatabase> {
         store.createIndex('byConv', 'conversationId')
       }
     },
+    blocking() {
+      try { _db?.close() } catch {}
+      _db = null
+      _dbOpening = null
+    },
+    terminated() {
+      _db = null
+      _dbOpening = null
+    },
   })
+
+  _db = await _dbOpening
+  _dbOpening = null
   return _db
 }
 
