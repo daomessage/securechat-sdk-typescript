@@ -208,24 +208,33 @@ export class CallModule {
   // ── 接听 ────────────────────────────────────────────────────
 
   async answer(): Promise<void> {
-    if (this.state !== 'ringing' || !this.pc) return
+    console.error('🟢 [CallModule] ANSWER STEP 0: answer() called, state=', this.state, 'hasPc=', !!this.pc)
+    if (this.state !== 'ringing' || !this.pc) {
+      console.error('🟢 [CallModule] ANSWER: early return (state not ringing or no pc)')
+      return
+    }
 
     try {
       const remoteHasVideo = this.remoteStream ? this.remoteStream.getVideoTracks().length > 0 : false;
-      // 同 call() 使用带超时的 getUserMedia,视频失败自动降级到音频
+      console.error('🟢 [CallModule] ANSWER STEP 1: getUserMedia audio+video=', remoteHasVideo)
       this.localStream = await this.getUserMediaWithTimeout(
         { audio: true, video: remoteHasVideo },
         6000
       )
+      console.error('🟢 [CallModule] ANSWER STEP 2: gUM OK', this.localStream.getTracks().map(t => t.kind))
       this.localStream.getTracks().forEach(t => this.pc!.addTrack(t, this.localStream!))
       this.onLocalStream?.(this.localStream)
 
+      console.error('🟢 [CallModule] ANSWER STEP 3: createAnswer...')
       const answer = await this.pc.createAnswer()
+      console.error('🟢 [CallModule] ANSWER STEP 4: setLocalDescription...')
       await this.pc.setLocalDescription(answer)
+      console.error('🟢 [CallModule] ANSWER STEP 5: sendSignal call_answer')
       this.sendSignal(this._callerAlias, 'call_answer', { sdp: answer.sdp, type: answer.type })
       this.setState('connecting')
+      console.error('🟢 [CallModule] ANSWER STEP 6: done, state=connecting, waiting ICE')
     } catch (err) {
-      console.error('[CallModule] answer() 失败', err)
+      console.error('🟢 [CallModule] ANSWER FAILED:', err)
       this.onError?.(err as Error)
       this.cleanup('ended')
     }
@@ -311,6 +320,22 @@ export class CallModule {
 
     switch (type) {
       case 'call_offer':
+        console.error('🔵 [CallModule] handleSignal call_offer - env.call_id=', env['call_id'],
+          'inner.call_id=', inner['call_id'],
+          'this.callId before=', this.callId)
+        // 关键:接收方必须记住发起方的 call_id,否则 sendSignal('call_answer' / 'call_ice')
+        // 发出的外层 envelope call_id 会是空字符串,relay 直接 drop 掉(无法路由)。
+        // fallback 1: envelope 有 call_id 用 envelope 的
+        // fallback 2: 否则用内层 signed 的 call_id(已通过 verify + from/call_id 一致校验)
+        const offerCallId = (typeof env['call_id'] === 'string' && env['call_id'])
+          ? env['call_id'] as string
+          : (typeof inner['call_id'] === 'string' ? inner['call_id'] as string : '')
+        if (offerCallId) {
+          this.callId = offerCallId
+          console.error('🔵 [CallModule] this.callId NOW=', this.callId)
+        } else {
+          console.error('🔵 [CallModule] ❌ NO call_id in offer at all! cannot respond')
+        }
         await this.handleOffer(from, {
           type: (env['sdp_type'] as RTCSdpType) ?? 'offer',
           sdp:  env['sdp'] as string,
@@ -393,11 +418,28 @@ export class CallModule {
 
     pc.onicecandidate = e => {
       if (e.candidate) {
-        console.warn(`[CallModule] 发送 ICE Candidate to ${remoteAlias}`);
+        // candidate string 里第 8 个字段是 type: host / srflx / prflx / relay
+        // relay = 走 TURN 中继,是 NAT 穿透失败后的兜底
+        // 只有 host = 仅局域网,不可能跨 NAT
+        const c = e.candidate.candidate || ''
+        const m = c.match(/typ (host|srflx|prflx|relay)/)
+        const type = m ? m[1] : '?'
+        const proto = c.match(/\b(udp|tcp)\b/i)?.[0] || '?'
+        console.warn(`[CallModule] 发送 ICE Candidate to ${remoteAlias} type=${type} proto=${proto}`);
         this.sendSignal(remoteAlias, 'call_ice', { candidate: e.candidate.toJSON() })
       } else {
         console.warn(`[CallModule] ICE Gathering Completed`);
       }
+    }
+
+    pc.onicecandidateerror = (e: any) => {
+      console.error(`[CallModule] ICE Candidate Error:`, {
+        url: e.url,
+        errorCode: e.errorCode,
+        errorText: e.errorText,
+        address: e.address,
+        port: e.port,
+      })
     }
 
     pc.onconnectionstatechange = () => {
@@ -406,6 +448,23 @@ export class CallModule {
       if (pc.connectionState === 'connecting') this.setState('connecting')
       if (pc.connectionState === 'failed') {
         console.error(`[CallModule] WebRTC connection failed!`);
+        // 打印 candidate pair 状态定位 TURN 问题
+        pc.getStats().then(stats => {
+          const pairs: any[] = []
+          const candidates: any[] = []
+          stats.forEach((r: any) => {
+            if (r.type === 'candidate-pair') pairs.push({
+              state: r.state, nominated: r.nominated,
+              bytesSent: r.bytesSent, bytesReceived: r.bytesReceived,
+              localCandidateId: r.localCandidateId, remoteCandidateId: r.remoteCandidateId,
+            })
+            if (r.type === 'local-candidate' || r.type === 'remote-candidate') {
+              candidates.push({ type: r.type, candidateType: r.candidateType, protocol: r.protocol, address: r.address, port: r.port, id: r.id })
+            }
+          })
+          console.error('[CallModule] FAILURE DIAG candidate-pairs:', JSON.stringify(pairs, null, 2))
+          console.error('[CallModule] FAILURE DIAG candidates:', JSON.stringify(candidates, null, 2))
+        }).catch(e => console.error('getStats err', e))
         this.cleanup('ended')
       }
     }

@@ -61,13 +61,25 @@ export class RobustWSTransport implements WSTransport {
     this.networkListeners.forEach(fn => fn(state))
   }
 
-  connect(url: string) {
-    this.lastUrl = url
+  // urlProvider 每次被调用都**重新**拉 URL (含新 ticket),
+  // 避免重连时拿已过期的一次性 ticket 导致永久失联。
+  // 向后兼容: 支持 string 参数当作固定 URL(测试用,生产不推荐)。
+  private urlProvider: (() => Promise<string>) | null = null
+
+  connect(urlOrProvider: string | (() => Promise<string>)) {
+    if (typeof urlOrProvider === 'string') {
+      // 旧形态: 单次 URL,不支持重连换 ticket
+      const fixed = urlOrProvider
+      this.urlProvider = async () => fixed
+      this.lastUrl = fixed
+    } else {
+      this.urlProvider = urlOrProvider
+    }
     this.intentionalClose = false
     this._doConnect()
   }
 
-  private _doConnect() {
+  private async _doConnect() {
     if (this.ws) {
       this.ws.onopen = null
       this.ws.onmessage = null
@@ -77,6 +89,20 @@ export class RobustWSTransport implements WSTransport {
     }
 
     this.emitNetworkState('connecting')
+
+    // 每次连接都通过 provider 拉新 URL(重连时 ticket 重新签发)
+    if (!this.urlProvider) {
+      console.error('[Transport] urlProvider 未设置,无法连接')
+      return
+    }
+    try {
+      this.lastUrl = await this.urlProvider()
+    } catch (e) {
+      console.error('[Transport] 拉取 WS URL 失败,将按退避重连:', e)
+      this.emitNetworkState('disconnected')
+      this._scheduleReconnect()
+      return
+    }
 
     this.ws = new WebSocket(this.lastUrl)
 

@@ -130,24 +130,25 @@ export class SecureChatClient {
       throw new Error('No local identity + token. Call registerAccount / restoreSession first.')
     }
 
-    let wsBase = this.http.getApiBase()
-    wsBase = wsBase.replace(/^http/, 'ws')
-
-    // 优先使用 ticket 机制(服务端 30s TTL 一次性消费)
-    try {
-      const resp = await this.http.post('/api/v1/ws/ticket', {})
-      if (resp && resp.ticket) {
-        this.transport.connect(`${wsBase}/ws?user_uuid=${uuid}&ticket=${resp.ticket}`)
-        return
+    // urlProvider 会被 transport 在"每次连接和重连"时调用,
+    // 每次都重新拉一次性 ticket,避免缓存过期 ticket 导致永久失联。
+    // 这是 1.0.9 修复手机 WS 断开后无法自动重连的关键。
+    const buildWsUrl = async (): Promise<string> => {
+      let wsBase = this.http.getApiBase().replace(/^http/, 'ws')
+      // 优先使用 ticket 机制(服务端 30s TTL 一次性消费)
+      try {
+        const resp = await this.http.post('/api/v1/ws/ticket', {})
+        if (resp && resp.ticket) {
+          return `${wsBase}/ws?user_uuid=${uuid}&ticket=${resp.ticket}`
+        }
+      } catch (e) {
+        console.warn('[SDK] ws/ticket not available, falling back to token in URL:', e)
       }
-    } catch (e) {
-      // ticket 接口不可用(旧版服务端), 降级到 token 方式
-      // eslint-disable-next-line no-console
-      console.warn('[SDK] ws/ticket not available, falling back to token in URL:', e)
+      // 降级:旧版服务端兼容(token 不是一次性,不会有 ticket 失效问题)
+      return `${wsBase}/ws?user_uuid=${uuid}&token=${token}`
     }
 
-    // 降级：旧版服务端兼容
-    this.transport.connect(`${wsBase}/ws?user_uuid=${uuid}&token=${token}`)
+    this.transport.connect(buildWsUrl)
   }
 
   /** 手动断开 WS(调试 / 省电模式) */
