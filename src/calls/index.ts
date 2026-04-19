@@ -207,12 +207,20 @@ export class CallModule {
 
   // ── 接听 ────────────────────────────────────────────────────
 
+  private _answering = false
   async answer(): Promise<void> {
-    console.error('🟢 [CallModule] ANSWER STEP 0: answer() called, state=', this.state, 'hasPc=', !!this.pc)
+    console.error('🟢 [CallModule] ANSWER STEP 0: answer() called, state=', this.state, 'hasPc=', !!this.pc, 'answering=', this._answering)
+    // 防重入:UI 层按钮应该 disable,但 SDK 层再加一道锁
+    // 否则并发 answer() → 并发 getUserMedia → Android Chrome 麦克风锁死全部 timeout
+    if (this._answering) {
+      console.error('🟢 [CallModule] ANSWER: 已经在进行中,忽略重复调用')
+      return
+    }
     if (this.state !== 'ringing' || !this.pc) {
       console.error('🟢 [CallModule] ANSWER: early return (state not ringing or no pc)')
       return
     }
+    this._answering = true
 
     try {
       const remoteHasVideo = this.remoteStream ? this.remoteStream.getVideoTracks().length > 0 : false;
@@ -237,6 +245,8 @@ export class CallModule {
       console.error('🟢 [CallModule] ANSWER FAILED:', err)
       this.onError?.(err as Error)
       this.cleanup('ended')
+    } finally {
+      this._answering = false
     }
   }
 
@@ -414,7 +424,20 @@ export class CallModule {
   // ── RTCPeerConnection 工厂 ───────────────────────────────────
 
   private createPeerConnection(config: RTCConfiguration, remoteAlias: string): RTCPeerConnection {
+    // 打印完整 ICE 配置,验证两端拿到的 TURN credentials 格式是否一致
+    console.error('🟡 [CallModule] createPeerConnection config:', JSON.stringify({
+      iceTransportPolicy: config.iceTransportPolicy,
+      iceServers: (config.iceServers || []).map((s: any) => ({
+        urls: s.urls,
+        hasUsername: !!s.username,
+        hasCredential: !!s.credential,
+      })),
+    }, null, 2))
     const pc = new RTCPeerConnection(config)
+
+    pc.onicegatheringstatechange = () => {
+      console.error(`🟡 [CallModule] iceGatheringState=${pc.iceGatheringState}`)
+    }
 
     pc.onicecandidate = e => {
       if (e.candidate) {

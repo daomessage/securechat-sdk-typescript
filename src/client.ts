@@ -103,7 +103,10 @@ export class SecureChatClient {
     alwaysRelay?: boolean
   }): void {
     if (this.calls) return
-    const alwaysRelay = opts.alwaysRelay ?? true
+    // 默认允许 P2P 直连 + TURN 兜底(iceTransportPolicy='all'),不强制走 TURN
+    // 强制 relay 在某些 coturn 配置错误时会导致通话完全建不起来
+    // 付费用户 / 需要 IP 隐藏场景再显式传 alwaysRelay:true
+    const alwaysRelay = opts.alwaysRelay ?? false
     const inner = new CallModule(
       this.transport,
       async () => {
@@ -112,8 +115,8 @@ export class SecureChatClient {
         const cfg: RTCConfiguration = { iceServers: resp.ice_servers ?? [] }
         if (alwaysRelay) {
           cfg.iceTransportPolicy = 'relay'
-        } else if (resp.ice_transport_policy) {
-          cfg.iceTransportPolicy = resp.ice_transport_policy as RTCIceTransportPolicy
+        } else {
+          cfg.iceTransportPolicy = 'all'  // 允许 host/srflx/relay 全部候选
         }
         return cfg
       },
