@@ -55,10 +55,11 @@ export class CallsModule {
   }
 
   // onIncomingCall / onError 直接透传到 inner(inner 才是真正触发这些回调的层)
-  set onIncomingCall(cb: ((fromAlias: string) => void) | undefined) {
+  // 1.0.12+ onIncomingCall 携带 isVideo 参数,UI 层据此决定视频/音频响铃界面
+  set onIncomingCall(cb: ((fromAlias: string, isVideo: boolean) => void) | undefined) {
     this.inner.onIncomingCall = cb
   }
-  get onIncomingCall(): ((fromAlias: string) => void) | undefined {
+  get onIncomingCall(): ((fromAlias: string, isVideo: boolean) => void) | undefined {
     return this.inner.onIncomingCall
   }
 

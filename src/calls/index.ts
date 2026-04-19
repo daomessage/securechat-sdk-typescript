@@ -131,7 +131,8 @@ export class CallModule {
   public onStateChange?: (state: CallState) => void
   public onRemoteStream?: (stream: MediaStream) => void
   public onLocalStream?: (stream: MediaStream) => void
-  public onIncomingCall?: (fromAlias: string) => void
+  // onIncomingCall 携带 isVideo,UI 层据此决定响铃界面 / 是否显示视频占位
+  public onIncomingCall?: (fromAlias: string, isVideo: boolean) => void
   public onError?: (err: Error) => void
 
   public getLocalStream(): MediaStream | null { return this.localStream }
@@ -223,8 +224,14 @@ export class CallModule {
     this._answering = true
 
     try {
-      const remoteHasVideo = this.remoteStream ? this.remoteStream.getVideoTracks().length > 0 : false;
-      console.error('🟢 [CallModule] ANSWER STEP 1: getUserMedia audio+video=', remoteHasVideo)
+      // 检查对方 SDP 里有没有 m=video 行,而不是等 this.remoteStream(可能还没 ontrack)
+      // 因为 answer() 在点"接听"时立刻被调,pc.setRemoteDescription(offer) 已做完但
+      // ontrack 回调是异步的,this.remoteStream 可能还是 null
+      // SDP offer 里 "m=video" 是对方要发视频轨的明确信号
+      const remoteSdp = this.pc?.remoteDescription?.sdp || ''
+      const remoteHasVideo = /^m=video /m.test(remoteSdp)
+      console.error('🟢 [CallModule] ANSWER STEP 1: getUserMedia audio+video=', remoteHasVideo,
+        '(based on SDP m=video line)')
       this.localStream = await this.getUserMediaWithTimeout(
         { audio: true, video: remoteHasVideo },
         6000
@@ -371,8 +378,11 @@ export class CallModule {
     console.error('🟢 [CallModule] RCVD STEP 1: handleOffer from', from)
     this._callerAlias = from
     this._remoteAlias = from
-    console.error('🟢 [CallModule] RCVD STEP 2: 触发 onIncomingCall 回调', !!this.onIncomingCall)
-    this.onIncomingCall?.(from)
+    // 从 offer SDP 判断对方是否带视频,传给 UI 层以渲染正确的响铃界面
+    const offerSdp = (payload['sdp'] as string) || ''
+    const isVideo = /^m=video /m.test(offerSdp)
+    console.error('🟢 [CallModule] RCVD STEP 2: 触发 onIncomingCall 回调', !!this.onIncomingCall, 'isVideo=', isVideo)
+    this.onIncomingCall?.(from, isVideo)
     console.error('🟢 [CallModule] RCVD STEP 3: setState(ringing)')
     this.setState('ringing')
 
