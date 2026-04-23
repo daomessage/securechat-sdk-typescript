@@ -511,11 +511,34 @@ export class CallModule {
     }
 
     pc.ontrack = e => {
-      console.warn(`[CallModule] 收到 Remote Track: ${e.track.kind}`);
-      if (e.streams[0]) {
-        this.remoteStream = e.streams[0];
+      // 详细诊断: track kind / 是否 ended / streams 数量
+      const s0 = e.streams[0];
+      console.warn(
+        `[CallModule] 收到 Remote Track: kind=${e.track.kind} ` +
+        `readyState=${e.track.readyState} enabled=${e.track.enabled} ` +
+        `muted=${e.track.muted} streams=${e.streams.length} ` +
+        (s0 ? `stream_tracks=[${s0.getTracks().map(t => `${t.kind}:${t.readyState}`).join(',')}]` : 'no_stream')
+      );
+      if (s0) {
+        // 某些情况 (iOS Safari) 音频和视频可能分别给不同 stream, merge 到一个避免覆盖
+        if (this.remoteStream && this.remoteStream !== s0) {
+          // 先前已有 stream, 这次是新的: 把新轨加进旧 stream 而不是替换
+          e.streams[0].getTracks().forEach(t => {
+            if (!this.remoteStream!.getTracks().includes(t)) {
+              this.remoteStream!.addTrack(t);
+            }
+          });
+          console.warn(`[CallModule] merged track into existing remoteStream: ` +
+            `now=[${this.remoteStream.getTracks().map(t => t.kind).join(',')}]`);
+        } else {
+          this.remoteStream = s0;
+        }
         this.onRemoteStream?.(this.remoteStream);
       }
+      // 追踪 mute/unmute 事件 (iOS 常见"video track 收到但 muted=true"黑屏问题)
+      e.track.onmute = () => console.warn(`[CallModule] remote ${e.track.kind} track MUTED`);
+      e.track.onunmute = () => console.warn(`[CallModule] remote ${e.track.kind} track UNMUTED`);
+      e.track.onended = () => console.warn(`[CallModule] remote ${e.track.kind} track ENDED`);
     }
 
     return pc
