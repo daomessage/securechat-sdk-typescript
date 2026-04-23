@@ -589,10 +589,17 @@ export class CallModule {
   }
 
   private cleanup(finalState: CallState): void {
+    // stop + 清 local (ended track 不能留在 stream 里, 下次通话会累积)
     this.localStream?.getTracks().forEach(t => t.stop())
+    this.localStream = null
+    // stop + 清 remote (之前漏了这段 → 连续通话时 remoteStream 堆 ended track)
+    this.remoteStream?.getTracks().forEach(t => t.stop())
+    this.remoteStream = null
+    // 通知 UI 层 stream 已清空 (避免 PWA 继续用旧 stream 引用)
+    this.onLocalStream?.(null as unknown as MediaStream)
+    this.onRemoteStream?.(null as unknown as MediaStream)
     this.pc?.close()
     this.pc = null
-    this.localStream = null
     this.setState(finalState)
   }
 

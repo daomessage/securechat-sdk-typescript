@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "SecureChat End-to-End Encrypted Messaging SDK",
   "author": "Daomessage Team",
   "license": "MIT",
